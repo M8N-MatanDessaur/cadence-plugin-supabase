@@ -1,0 +1,56 @@
+{
+  "id": "supabase",
+  "name": "Supabase",
+  "version": "0.2.0",
+  "description": "Full Supabase control plane: database, SQL, auth, storage, edge functions, realtime, webhooks. Multi-project with project switching.",
+  "icon": "database-zap",
+  "tint": "62, 207, 142",
+  "instructions": "instructions.md",
+  "aiKeywords": [
+    "supabase",
+    "supabase.com",
+    "supabase project",
+    "supabase sql",
+    "supabase dashboard",
+    "postgrest",
+    "postgres",
+    "postgresql",
+    "pgsql",
+    "pg",
+    "rls",
+    "row level security",
+    "row-level security",
+    "database migration",
+    "supabase migration",
+    "supabase auth",
+    "supabase storage",
+    "supabase bucket",
+    "edge function",
+    "supabase function",
+    "supabase realtime",
+    "supabase webhook",
+    "service role",
+    "anon key",
+    "pgvector",
+    "embeddings",
+    "gotrue",
+    "supabase cli",
+    "pg_cron",
+    "pg_net",
+    "pg_graphql"
+  ],
+  "activationConditions": { "always": true },
+  "settings": [],
+  "contributions": {
+    "settingsHtml": "settings.html",
+    "centerTabs": [
+      {
+        "id": "manager",
+        "label": "Supabase",
+        "icon": "database-zap",
+        "html": "tab.html"
+      }
+    ],
+    "routes": "routes.js"
+  }
+}

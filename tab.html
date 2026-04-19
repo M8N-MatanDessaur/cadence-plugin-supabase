@@ -1,0 +1,923 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<script src="/plugins/sdk/symphonee-sdk.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  ::-webkit-scrollbar { width: 7px; height: 7px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--surface1); border-radius: 99px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--surface2); }
+  body { margin: 0; overflow: hidden; height: 100vh; display: flex; flex-direction: column; font-family: var(--font-ui); color: var(--text); background: var(--base); }
+
+  .toolbar {
+    height: 42px; min-height: 42px; display: flex; align-items: center; gap: 8px;
+    padding: 0 12px; background: var(--mantle); border-bottom: 1px solid var(--surface0);
+  }
+  .toolbar-title { font-size: 13px; font-weight: 700; color: rgb(62, 207, 142); }
+  .conn-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--surface1); }
+  .conn-dot.ok { background: var(--green); }
+  .conn-dot.err { background: var(--red); }
+  .project-select {
+    background: var(--surface0); border: 1px solid var(--surface1); color: var(--text);
+    padding: 3px 8px; border-radius: var(--radius); font: 12px var(--font-ui);
+    max-width: 240px; cursor: pointer; outline: none;
+  }
+  .project-select:focus { border-color: var(--accent); }
+  .spacer { flex: 1; }
+  .btn {
+    background: var(--surface1); border: 1px solid var(--overlay0); color: var(--text);
+    padding: 5px 12px; border-radius: var(--radius); cursor: pointer; font: 12px var(--font-ui);
+  }
+  .btn:hover { border-color: var(--accent); }
+  .btn.primary { background: rgb(62, 207, 142); color: var(--crust); border-color: transparent; font-weight: 600; }
+  .btn.sm { padding: 3px 10px; font-size: 11px; }
+  .btn.danger { color: var(--red); }
+
+  .tabs {
+    display: flex; gap: 2px; padding: 0 12px; height: 36px; min-height: 36px;
+    border-bottom: 1px solid var(--surface0); background: var(--mantle);
+    overflow-x: auto; flex-wrap: nowrap;
+  }
+  .tab {
+    padding: 0 14px; display: flex; align-items: center; font-size: 12px;
+    cursor: pointer; color: var(--subtext0); border-bottom: 2px solid transparent;
+    white-space: nowrap;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: rgb(62, 207, 142); border-bottom-color: rgb(62, 207, 142); }
+
+  .panel { flex: 1; overflow: auto; padding: 14px; display: none; }
+  .panel.active { display: block; }
+
+  h3 { font-size: 13px; margin: 0 0 10px; color: var(--subtext1); }
+  h4 { font-size: 12px; margin: 14px 0 6px; color: var(--subtext0); text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
+
+  .sql-area { display: flex; flex-direction: column; gap: 10px; height: 100%; }
+  .sql-input {
+    width: 100%; height: 200px; padding: 10px; background: var(--surface0);
+    border: 1px solid var(--surface1); border-radius: var(--radius); color: var(--text);
+    font: 12px/1.5 'Cascadia Mono', monospace; resize: vertical; outline: none;
+  }
+  .sql-input:focus { border-color: var(--accent); }
+  .sql-controls { display: flex; gap: 8px; align-items: center; }
+  .sql-result { flex: 1; background: var(--surface0); padding: 10px; border-radius: var(--radius); overflow: auto; border: 1px solid var(--surface1); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--surface0); }
+  th { background: var(--mantle); font-weight: 600; color: var(--subtext1); position: sticky; top: 0; }
+  tr:hover td { background: var(--surface0); }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+  .empty { color: var(--subtext0); padding: 20px; text-align: center; font-style: italic; }
+  .err { color: var(--red); padding: 10px; background: color-mix(in srgb, var(--red) 15%, transparent); border-radius: var(--radius); }
+  pre { margin: 0; font: 11px/1.4 'Cascadia Mono', monospace; white-space: pre-wrap; word-break: break-word; }
+  .warn { color: var(--yellow); background: color-mix(in srgb, var(--yellow) 12%, transparent); padding: 10px; border-radius: var(--radius); margin-bottom: 10px; font-size: 11px; }
+  .sub-nav { display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap; align-items: center; }
+  .sub-nav button { background: var(--surface0); border: 1px solid var(--surface1); color: var(--text); padding: 4px 10px; border-radius: var(--radius); cursor: pointer; font: 11px var(--font-ui); }
+  .sub-nav button.active { border-color: rgb(62, 207, 142); color: rgb(62, 207, 142); }
+  .kv { font: 11px 'Cascadia Mono', monospace; color: var(--subtext1); }
+  .kv b { color: var(--text); font-weight: 600; }
+
+  /* Stats cards */
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; margin-bottom: 16px; }
+  .card {
+    background: var(--surface0); border: 1px solid var(--surface1); border-radius: var(--radius);
+    padding: 12px;
+  }
+  .card .label { font-size: 10px; color: var(--subtext0); text-transform: uppercase; letter-spacing: 0.5px; }
+  .card .value { font: 18px 'Cascadia Mono', monospace; color: var(--text); margin-top: 4px; font-weight: 600; }
+  .card .sub { font-size: 10px; color: var(--subtext0); margin-top: 4px; }
+
+  /* Modal */
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: none;
+    align-items: center; justify-content: center; z-index: 100;
+  }
+  .modal-backdrop.open { display: flex; }
+  .modal {
+    background: var(--base); border: 1px solid var(--surface1); border-radius: var(--radius);
+    padding: 18px; min-width: 420px; max-width: 640px; max-height: 80vh; overflow: auto;
+  }
+  .modal h3 { margin-top: 0; }
+  .field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+  .field label { font-size: 11px; color: var(--subtext1); }
+  .field input, .field select, .field textarea {
+    background: var(--surface0); border: 1px solid var(--surface1); border-radius: var(--radius);
+    color: var(--text); padding: 6px 8px; font: 12px var(--font-ui); outline: none;
+  }
+  .field input:focus, .field select:focus, .field textarea:focus { border-color: rgb(62, 207, 142); }
+  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+
+  .row-actions { display: flex; gap: 4px; }
+  .chip {
+    display: inline-block; padding: 2px 6px; font-size: 10px; border-radius: 99px;
+    background: var(--surface1); color: var(--subtext1);
+  }
+  .chip.ok { background: color-mix(in srgb, var(--green) 20%, transparent); color: var(--green); }
+  .chip.err { background: color-mix(in srgb, var(--red) 20%, transparent); color: var(--red); }
+  .chip.warn { background: color-mix(in srgb, var(--yellow) 20%, transparent); color: var(--yellow); }
+</style>
+</head>
+<body>
+
+<div class="toolbar">
+  <span class="conn-dot" id="conn-dot"></span>
+  <span class="toolbar-title">Supabase</span>
+  <select class="project-select" id="project-select"></select>
+  <div class="spacer"></div>
+  <span class="kv" id="project-meta"></span>
+  <button class="btn sm" id="refresh-btn">Refresh</button>
+</div>
+
+<div class="tabs">
+  <div class="tab active" data-tab="overview">Overview</div>
+  <div class="tab" data-tab="projects">Projects</div>
+  <div class="tab" data-tab="orgs">Orgs</div>
+  <div class="tab" data-tab="sql">SQL</div>
+  <div class="tab" data-tab="tables">Tables</div>
+  <div class="tab" data-tab="auth">Auth</div>
+  <div class="tab" data-tab="storage">Storage</div>
+  <div class="tab" data-tab="functions">Functions</div>
+  <div class="tab" data-tab="stats">Stats</div>
+  <div class="tab" data-tab="advisors">Advisors</div>
+  <div class="tab" data-tab="secrets">Secrets</div>
+  <div class="tab" data-tab="billing">Billing</div>
+  <div class="tab" data-tab="config">Config</div>
+</div>
+
+<!-- Overview -->
+<div class="panel active" data-panel="overview">
+  <h3>Project overview</h3>
+  <div id="overview-cards"><div class="empty">Loading...</div></div>
+  <h4>Service health</h4>
+  <div id="overview-health"><div class="empty">Loading...</div></div>
+</div>
+
+<!-- Projects -->
+<div class="panel" data-panel="projects">
+  <div class="sub-nav">
+    <button class="btn primary sm" id="new-project-btn">+ New cloud project</button>
+    <button class="btn sm" id="reload-projects">Reload</button>
+  </div>
+  <h4>Symphonee-registered projects</h4>
+  <div id="projects-local"></div>
+  <h4>Cloud projects (Management API)</h4>
+  <div id="projects-cloud"></div>
+</div>
+
+<!-- Organizations -->
+<div class="panel" data-panel="orgs">
+  <div class="sub-nav">
+    <button class="btn primary sm" id="new-org-btn">+ New organization</button>
+    <button class="btn sm" id="reload-orgs">Reload</button>
+  </div>
+  <div id="orgs-list"></div>
+  <div id="org-detail"></div>
+</div>
+
+<!-- SQL -->
+<div class="panel" data-panel="sql">
+  <div class="sql-area">
+    <textarea class="sql-input" id="sql-input" placeholder="select * from public.profiles limit 10;"></textarea>
+    <div class="sql-controls">
+      <button class="btn primary" id="sql-run">Run</button>
+      <button class="btn sm" id="sql-run-ro">Run (read-only)</button>
+      <label class="kv"><input type="checkbox" id="sql-force"> force (skip destructive gate)</label>
+    </div>
+    <div class="sql-result" id="sql-result"><div class="empty">Results will appear here.</div></div>
+  </div>
+</div>
+
+<!-- Tables -->
+<div class="panel" data-panel="tables">
+  <div class="sub-nav">
+    <select class="project-select" id="schema-select"></select>
+    <button class="btn sm" id="reload-tables">Reload</button>
+  </div>
+  <div id="tables-list"></div>
+</div>
+
+<!-- Auth -->
+<div class="panel" data-panel="auth">
+  <div class="sub-nav">
+    <button class="btn sm" id="reload-auth">Reload users</button>
+    <button class="btn primary sm" id="new-user-btn">+ New user</button>
+  </div>
+  <div id="auth-list"></div>
+</div>
+
+<!-- Storage -->
+<div class="panel" data-panel="storage">
+  <div class="sub-nav">
+    <button class="btn sm" id="reload-buckets">Reload buckets</button>
+    <button class="btn primary sm" id="new-bucket-btn">+ New bucket</button>
+  </div>
+  <div id="buckets-list"></div>
+</div>
+
+<!-- Functions -->
+<div class="panel" data-panel="functions">
+  <div class="sub-nav">
+    <button class="btn sm" id="reload-fns">Reload</button>
+  </div>
+  <div id="fns-list"></div>
+</div>
+
+<!-- Stats -->
+<div class="panel" data-panel="stats">
+  <div class="sub-nav">
+    <button class="btn sm active" data-stats="db">Database</button>
+    <button class="btn sm" data-stats="tables">Tables</button>
+    <button class="btn sm" data-stats="indexes">Indexes</button>
+    <button class="btn sm" data-stats="unused-indexes">Unused idx</button>
+    <button class="btn sm" data-stats="slow-queries">Slow queries</button>
+    <button class="btn sm" data-stats="long-running">Long running</button>
+    <button class="btn sm" data-stats="blocking">Blocking</button>
+    <button class="btn sm" data-stats="locks">Locks</button>
+    <button class="btn sm" data-stats="cache-hit">Cache hit</button>
+    <button class="btn sm" data-stats="vacuum">Vacuum</button>
+    <button class="btn sm" data-stats="replication-slots">Replication</button>
+    <button class="btn sm" data-stats="bucket-sizes">Storage</button>
+    <button class="btn sm" data-stats="auth/summary">Auth summary</button>
+    <button class="btn sm" data-stats="auth/growth">Auth growth</button>
+    <button class="btn sm" data-stats="auth/providers">Auth providers</button>
+    <button class="btn sm" data-stats="auth/mfa">MFA</button>
+    <button class="btn sm" data-stats="auth/sessions">Sessions</button>
+  </div>
+  <div id="stats-result"><div class="empty">Pick a report.</div></div>
+</div>
+
+<!-- Advisors -->
+<div class="panel" data-panel="advisors">
+  <div class="sub-nav">
+    <button class="btn sm active" id="adv-sec">Security</button>
+    <button class="btn sm" id="adv-perf">Performance</button>
+  </div>
+  <div id="adv-list"></div>
+</div>
+
+<!-- Secrets -->
+<div class="panel" data-panel="secrets">
+  <div class="sub-nav">
+    <button class="btn sm" id="reload-secrets">Reload</button>
+    <button class="btn primary sm" id="new-secret-btn">+ Set secret</button>
+  </div>
+  <div id="secrets-list"></div>
+</div>
+
+<!-- Billing -->
+<div class="panel" data-panel="billing">
+  <div class="sub-nav">
+    <button class="btn sm" id="reload-billing">Reload</button>
+  </div>
+  <h4>Compute & Disk</h4>
+  <div id="billing-disk"></div>
+  <h4>Addons</h4>
+  <div id="billing-addons"></div>
+</div>
+
+<!-- Config -->
+<div class="panel" data-panel="config">
+  <div class="sub-nav">
+    <button class="btn sm active" data-cfg="postgres">Postgres</button>
+    <button class="btn sm" data-cfg="auth">Auth</button>
+    <button class="btn sm" data-cfg="storage-config">Storage</button>
+    <button class="btn sm" data-cfg="realtime/config">Realtime</button>
+    <button class="btn sm" data-cfg="postgrest-config">PostgREST</button>
+    <button class="btn sm" data-cfg="pooler-config">Pooler</button>
+    <button class="btn sm" data-cfg="network-restrictions">Network</button>
+    <button class="btn sm" data-cfg="custom-hostname">Hostname</button>
+  </div>
+  <div id="cfg-view"></div>
+</div>
+
+<!-- Modals -->
+<div class="modal-backdrop" id="modal"><div class="modal" id="modal-inner"></div></div>
+
+<script>
+const API = 'http://127.0.0.1:3800/api/plugins/supabase';
+
+// ---- helpers ----
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
+function fmtBytes(n) {
+  if (n == null) return '-';
+  if (n < 1024) return n + ' B';
+  if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+  if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB';
+  return (n / 1073741824).toFixed(2) + ' GB';
+}
+function fmtDate(d) { return d ? new Date(d).toLocaleString() : '-'; }
+async function api(path, opts) {
+  const r = await fetch(API + path, opts);
+  const text = await r.text();
+  let data; try { data = JSON.parse(text); } catch (_) { data = text; }
+  return { status: r.status, data };
+}
+
+function modalOpen(html) {
+  document.getElementById('modal-inner').innerHTML = html;
+  document.getElementById('modal').classList.add('open');
+}
+function modalClose() {
+  document.getElementById('modal').classList.remove('open');
+}
+document.getElementById('modal').addEventListener('click', (e) => {
+  if (e.target.id === 'modal') modalClose();
+});
+
+function renderRows(el, rows) {
+  if (rows && rows.error) { el.innerHTML = '<div class="err">' + esc(rows.error) + '</div>'; return; }
+  if (!Array.isArray(rows) || !rows.length) { el.innerHTML = '<div class="empty">No rows.</div>'; return; }
+  const cols = Object.keys(rows[0]);
+  el.innerHTML = '<table><thead><tr>' + cols.map(c => '<th>' + esc(c) + '</th>').join('') + '</tr></thead>'
+    + '<tbody>' + rows.map(r => '<tr>' + cols.map(c => {
+        const v = r[c];
+        const text = v == null ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
+        const cls = (typeof v === 'number') ? ' class="num"' : '';
+        return '<td' + cls + '>' + esc(text) + '</td>';
+      }).join('') + '</tr>').join('') + '</tbody></table>';
+}
+
+// ---- tab switching ----
+document.querySelectorAll('.tab').forEach(t => {
+  t.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    t.classList.add('active');
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    document.querySelector('.panel[data-panel="' + t.dataset.tab + '"]').classList.add('active');
+    onTabActivate(t.dataset.tab);
+  });
+});
+
+// ---- header / projects ----
+async function loadProjects() {
+  const r = await fetch(API + '/projects').then(r => r.json());
+  const sel = document.getElementById('project-select');
+  sel.innerHTML = (r.projects || []).map(p =>
+    `<option value="${esc(p.name)}" ${p.name === r.activeProject ? 'selected' : ''}>${esc(p.name)}</option>`
+  ).join('') || '<option>-- none --</option>';
+  sel.onchange = async () => {
+    await fetch(API + '/projects/active', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name: sel.value})
+    });
+    refreshHeader();
+    loadOverview();
+  };
+  refreshHeader();
+}
+
+async function refreshHeader() {
+  const test = await fetch(API + '/test').then(r => r.json());
+  const dot = document.getElementById('conn-dot');
+  const meta = document.getElementById('project-meta');
+  if (test.project && test.project.ok) { dot.className = 'conn-dot ok'; meta.textContent = test.project.name; }
+  else if (test.managementToken && test.managementToken.ok) { dot.className = 'conn-dot ok'; meta.textContent = 'PAT ok'; }
+  else { dot.className = 'conn-dot err'; meta.textContent = 'not connected'; }
+}
+
+// ---- Overview ----
+async function loadOverview() {
+  const cardsEl = document.getElementById('overview-cards');
+  const healthEl = document.getElementById('overview-health');
+  cardsEl.innerHTML = '<div class="empty">Loading...</div>';
+  healthEl.innerHTML = '';
+  const { status, data } = await api('/stats/overview');
+  if (status >= 400) { cardsEl.innerHTML = '<div class="err">' + esc((data && data.error) || 'Error') + '</div>'; return; }
+  const row = Array.isArray(data) ? data[0] : data;
+  const o = row && row.overview;
+  if (!o) { cardsEl.innerHTML = '<div class="empty">No data.</div>'; return; }
+
+  cardsEl.innerHTML = '<div class="cards">'
+    + card('DB size', fmtBytes(o.database.size_bytes), o.database.pg_version)
+    + card('Connections', o.database.connections + ' / ' + o.database.max_connections, 'live / max')
+    + card('Users', o.auth.total_users, `${o.auth.confirmed} confirmed, ${o.auth.banned} banned`)
+    + card('Signups 24h', o.auth.signups_24h, o.auth.active_24h + ' active 24h')
+    + card('Storage', fmtBytes(o.storage.bytes), `${o.storage.buckets} buckets, ${o.storage.objects} objects`)
+    + card('Public tables', o.schema_counts.public_tables, `${o.schema_counts.public_policies} policies`)
+    + card('Functions', o.schema_counts.public_functions, `${o.schema_counts.triggers} triggers`)
+    + card('Extensions', o.schema_counts.extensions, '')
+    + '</div>';
+
+  const h = await api('/mgmt/project/health');
+  if (h.status < 400 && Array.isArray(h.data)) {
+    healthEl.innerHTML = '<table><thead><tr><th>Service</th><th>Status</th><th>Healthy</th></tr></thead><tbody>'
+      + h.data.map(s => `<tr><td>${esc(s.name || s.service)}</td><td><span class="chip ${s.status==='ACTIVE_HEALTHY'||s.healthy?'ok':'err'}">${esc(s.status || (s.healthy?'healthy':'down'))}</span></td><td>${s.healthy ? 'yes' : '-'}</td></tr>`).join('')
+      + '</tbody></table>';
+  } else {
+    healthEl.innerHTML = '<div class="empty">Health info unavailable (needs Management token).</div>';
+  }
+}
+function card(label, value, sub) {
+  return `<div class="card"><div class="label">${esc(label)}</div><div class="value">${esc(value)}</div><div class="sub">${esc(sub || '')}</div></div>`;
+}
+
+// ---- Projects ----
+async function loadProjectsTab() {
+  const local = await fetch(API + '/projects').then(r => r.json());
+  const localEl = document.getElementById('projects-local');
+  localEl.innerHTML = (local.projects || []).length
+    ? '<table><thead><tr><th></th><th>Name</th><th>Ref</th><th>URL</th><th>Keys</th><th></th></tr></thead><tbody>'
+      + local.projects.map(p => `<tr>
+        <td>${p.name === local.activeProject ? '<span class="chip ok">active</span>' : ''}</td>
+        <td>${esc(p.name)}</td><td class="kv">${esc(p.projectRef)}</td><td class="kv">${esc(p.url)}</td>
+        <td>${p.serviceRoleKeySet ? '<span class="chip ok">sr</span>' : ''} ${p.anonKeySet ? '<span class="chip">anon</span>' : ''}</td>
+        <td class="row-actions">
+          <button class="btn sm" onclick="switchTo('${esc(p.name)}')">Use</button>
+          <button class="btn sm danger" onclick="removeLocal('${esc(p.name)}')">Remove</button>
+        </td></tr>`).join('') + '</tbody></table>'
+    : '<div class="empty">No projects registered locally yet.</div>';
+
+  const cloud = await api('/mgmt/projects');
+  const cloudEl = document.getElementById('projects-cloud');
+  if (cloud.status >= 400) { cloudEl.innerHTML = '<div class="err">' + esc((cloud.data && cloud.data.error) || 'Error') + '</div>'; return; }
+  const list = Array.isArray(cloud.data) ? cloud.data : [];
+  cloudEl.innerHTML = list.length
+    ? '<table><thead><tr><th>Name</th><th>Ref</th><th>Org</th><th>Region</th><th>Plan</th><th>Status</th><th>Created</th></tr></thead><tbody>'
+      + list.map(p => `<tr>
+        <td>${esc(p.name)}</td><td class="kv">${esc(p.id || p.ref)}</td>
+        <td class="kv">${esc(p.organization_id || '-')}</td>
+        <td>${esc(p.region)}</td>
+        <td>${esc(p.plan || '')}</td>
+        <td>${esc(p.status || '')}</td>
+        <td>${fmtDate(p.created_at)}</td>
+      </tr>`).join('') + '</tbody></table>'
+    : '<div class="empty">No cloud projects or Management token missing.</div>';
+}
+window.switchTo = async (name) => {
+  await fetch(API + '/projects/active', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({name}) });
+  loadProjects(); loadProjectsTab();
+};
+window.removeLocal = async (name) => {
+  if (!confirm('Remove ' + name + ' from Symphonee? (does not delete the Supabase project)')) return;
+  await fetch(API + '/projects/' + encodeURIComponent(name), { method: 'DELETE' });
+  loadProjectsTab();
+};
+
+async function openNewProjectModal() {
+  const orgs = await api('/mgmt/organizations');
+  const regions = await api('/mgmt/regions');
+  const orgOpts = (Array.isArray(orgs.data) ? orgs.data : []).map(o => `<option value="${esc(o.id)}">${esc(o.name)} (${esc(o.slug)})</option>`).join('');
+  const regionList = Array.isArray(regions.data) ? regions.data : [];
+  const regionOpts = regionList.map(r => {
+    const code = r.region || r;
+    const name = r.name || code;
+    return `<option value="${esc(code)}">${esc(name)} (${esc(code)})</option>`;
+  }).join('');
+
+  modalOpen(`
+    <h3>Create a Supabase project</h3>
+    <div class="field"><label>Name</label><input id="np-name" placeholder="my-new-project"></div>
+    <div class="field"><label>Organization</label><select id="np-org">${orgOpts}</select></div>
+    <div class="field"><label>Region</label><select id="np-region">${regionOpts}</select></div>
+    <div class="field"><label>Database password</label><input id="np-pass" type="password" placeholder="strong password"></div>
+    <div class="field"><label>Plan</label><select id="np-plan"><option value="free">Free</option><option value="pro">Pro</option><option value="team">Team</option></select></div>
+    <div class="field"><label>Instance size (optional)</label><select id="np-size"><option value="">Default</option><option>micro</option><option>small</option><option>medium</option><option>large</option><option>xlarge</option></select></div>
+    <div class="warn">Creating a project may incur billing on the selected organization. This call returns a confirm token; you'll be asked to confirm.</div>
+    <div class="modal-actions">
+      <button class="btn" onclick="modalClose()">Cancel</button>
+      <button class="btn primary" id="np-create">Create</button>
+    </div>
+  `);
+
+  document.getElementById('np-create').onclick = async () => {
+    const body = {
+      name: document.getElementById('np-name').value.trim(),
+      organization_id: document.getElementById('np-org').value,
+      db_pass: document.getElementById('np-pass').value,
+      region: document.getElementById('np-region').value,
+      plan: document.getElementById('np-plan').value,
+    };
+    const size = document.getElementById('np-size').value;
+    if (size) body.desired_instance_size = size;
+    if (!body.name || !body.organization_id || !body.region || !body.db_pass) {
+      alert('Name, org, region, and password are required.');
+      return;
+    }
+    let res = await api('/mgmt/projects', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
+    if (res.status === 409 && res.data && res.data.confirmRequired) {
+      if (!confirm(`${res.data.warning}\n\nCreate project "${body.name}" in region ${body.region}?`)) return;
+      res = await api('/mgmt/projects?confirm=' + encodeURIComponent(res.data.token), { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
+    }
+    if (res.status >= 400) { alert('Error: ' + (res.data && res.data.error || res.data.message || 'unknown')); return; }
+    alert('Project created. It may take a few minutes to be fully provisioned.');
+    modalClose();
+    loadProjectsTab();
+  };
+}
+document.getElementById('new-project-btn').addEventListener('click', openNewProjectModal);
+document.getElementById('reload-projects').addEventListener('click', loadProjectsTab);
+
+// ---- Organizations ----
+async function loadOrgs() {
+  const el = document.getElementById('orgs-list');
+  const detailEl = document.getElementById('org-detail');
+  detailEl.innerHTML = '';
+  const r = await api('/mgmt/organizations');
+  if (r.status >= 400) { el.innerHTML = '<div class="err">' + esc((r.data && r.data.error) || 'Error') + '</div>'; return; }
+  const list = Array.isArray(r.data) ? r.data : [];
+  if (!list.length) { el.innerHTML = '<div class="empty">No organizations.</div>'; return; }
+  el.innerHTML = '<table><thead><tr><th>Name</th><th>Slug</th><th>ID</th><th></th></tr></thead><tbody>'
+    + list.map(o => `<tr>
+        <td>${esc(o.name)}</td>
+        <td class="kv">${esc(o.slug)}</td>
+        <td class="kv">${esc(o.id)}</td>
+        <td class="row-actions">
+          <button class="btn sm" onclick="loadOrgDetail('${esc(o.slug)}')">Details</button>
+        </td>
+      </tr>`).join('') + '</tbody></table>';
+}
+window.loadOrgDetail = async (slug) => {
+  const el = document.getElementById('org-detail');
+  el.innerHTML = '<div class="empty">Loading ' + esc(slug) + '...</div>';
+  const [details, members, projects, entitlements] = await Promise.all([
+    api('/mgmt/organizations/' + encodeURIComponent(slug)),
+    api('/mgmt/organizations/' + encodeURIComponent(slug) + '/members'),
+    api('/mgmt/organizations/' + encodeURIComponent(slug) + '/projects'),
+    api('/mgmt/organizations/' + encodeURIComponent(slug) + '/entitlements'),
+  ]);
+  el.innerHTML = `<h4>${esc(slug)}</h4>
+    <h4>Members</h4>` + renderListOrErr(members)
+    + `<h4>Projects</h4>` + renderListOrErr(projects)
+    + `<h4>Entitlements</h4><pre>${esc(JSON.stringify(entitlements.data, null, 2))}</pre>`;
+};
+function renderListOrErr(r) {
+  if (r.status >= 400) return '<div class="err">' + esc((r.data && r.data.error) || 'Error') + '</div>';
+  const data = r.data;
+  if (!Array.isArray(data) || !data.length) return '<div class="empty">(none)</div>';
+  const cols = Object.keys(data[0]);
+  return '<table><thead><tr>' + cols.map(c => '<th>' + esc(c) + '</th>').join('') + '</tr></thead><tbody>'
+    + data.map(row => '<tr>' + cols.map(c => '<td>' + esc(typeof row[c] === 'object' ? JSON.stringify(row[c]) : row[c]) + '</td>').join('') + '</tr>').join('') + '</tbody></table>';
+}
+document.getElementById('new-org-btn').addEventListener('click', () => {
+  modalOpen(`
+    <h3>Create an organization</h3>
+    <div class="field"><label>Name</label><input id="no-name" placeholder="My company"></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="modalClose()">Cancel</button>
+      <button class="btn primary" id="no-create">Create</button>
+    </div>
+  `);
+  document.getElementById('no-create').onclick = async () => {
+    const name = document.getElementById('no-name').value.trim();
+    if (!name) return;
+    const res = await api('/mgmt/organizations', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({name}) });
+    if (res.status >= 400) { alert('Error: ' + (res.data && res.data.error || res.data.message)); return; }
+    modalClose(); loadOrgs();
+  };
+});
+document.getElementById('reload-orgs').addEventListener('click', loadOrgs);
+
+// ---- SQL ----
+async function runSql(readOnly) {
+  const q = document.getElementById('sql-input').value.trim();
+  const force = document.getElementById('sql-force').checked;
+  if (!q) return;
+  const resEl = document.getElementById('sql-result');
+  resEl.innerHTML = '<div class="empty">Running...</div>';
+  const endpoint = readOnly ? '/sql/select' : '/sql';
+  const { status, data } = await api(endpoint, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({query: q, readOnly, force}) });
+  if (status === 409 && data.confirmRequired) {
+    const list = (data.destructive || []).map(d => '<li>' + esc(d.kind) + ': ' + esc(d.statement) + '</li>').join('');
+    resEl.innerHTML = '<div class="warn">Destructive SQL detected:<ul>' + list + '</ul>Check "force" and re-run.</div>';
+    return;
+  }
+  if (data && data.error) { resEl.innerHTML = '<div class="err">' + esc(data.error) + '</div>'; return; }
+  renderRows(resEl, data);
+}
+document.getElementById('sql-run').addEventListener('click', () => runSql(false));
+document.getElementById('sql-run-ro').addEventListener('click', () => runSql(true));
+
+// ---- Tables ----
+async function loadSchemas() {
+  const rows = await fetch(API + '/schemas').then(r => r.json());
+  const sel = document.getElementById('schema-select');
+  sel.innerHTML = (Array.isArray(rows) ? rows : []).map(s =>
+    `<option value="${esc(s.name)}" ${s.name === 'public' ? 'selected' : ''}>${esc(s.name)}</option>`
+  ).join('');
+  sel.onchange = loadTables;
+  await loadTables();
+}
+async function loadTables() {
+  const schema = document.getElementById('schema-select').value || 'public';
+  const rows = await fetch(API + '/tables?schema=' + encodeURIComponent(schema)).then(r => r.json());
+  const el = document.getElementById('tables-list');
+  if (!Array.isArray(rows) || !rows.length) { el.innerHTML = '<div class="empty">No tables.</div>'; return; }
+  el.innerHTML = '<table><thead><tr><th>Name</th><th>Kind</th><th>Columns</th><th>~ Rows</th><th>Size</th></tr></thead><tbody>'
+    + rows.map(r => `<tr><td>${esc(r.name)}</td><td>${esc(r.kind)}</td><td class="num">${esc(r.column_count)}</td><td class="num">${esc(r.approx_rows)}</td><td class="num">${fmtBytes(r.size_bytes)}</td></tr>`).join('')
+    + '</tbody></table>';
+}
+
+// ---- Auth ----
+async function loadAuth() {
+  const r = await fetch(API + '/auth/users?page=1&per_page=100').then(r => r.json());
+  const users = r.users || r;
+  const el = document.getElementById('auth-list');
+  if (r.error) { el.innerHTML = '<div class="err">' + esc(r.error) + '</div>'; return; }
+  if (!Array.isArray(users) || !users.length) { el.innerHTML = '<div class="empty">No users.</div>'; return; }
+  el.innerHTML = '<table><thead><tr><th>Email</th><th>ID</th><th>Confirmed</th><th>Created</th><th>Last sign-in</th><th></th></tr></thead><tbody>'
+    + users.map(u => `<tr>
+        <td>${esc(u.email)}</td>
+        <td class="kv">${esc(u.id)}</td>
+        <td>${u.email_confirmed_at ? '<span class="chip ok">yes</span>' : '<span class="chip warn">no</span>'}</td>
+        <td>${u.created_at ? new Date(u.created_at).toLocaleDateString() : ''}</td>
+        <td>${u.last_sign_in_at ? new Date(u.last_sign_in_at).toLocaleString() : '-'}</td>
+        <td class="row-actions">
+          <button class="btn sm" onclick="viewUser('${esc(u.id)}')">Detail</button>
+          <button class="btn sm danger" onclick="deleteUser('${esc(u.id)}')">Delete</button>
+        </td>
+      </tr>`).join('') + '</tbody></table>';
+}
+window.viewUser = async (id) => {
+  const r = await api('/auth/users/' + encodeURIComponent(id) + '/detail');
+  if (r.status >= 400) { alert('Error: ' + (r.data && r.data.error)); return; }
+  const row = Array.isArray(r.data) ? r.data[0] : r.data;
+  modalOpen(`<h3>User ${esc(id)}</h3>
+    <h4>Core</h4><pre>${esc(JSON.stringify(row.user, null, 2))}</pre>
+    <h4>Identities (${row.identities.length})</h4><pre>${esc(JSON.stringify(row.identities, null, 2))}</pre>
+    <h4>Sessions (${row.sessions.length})</h4><pre>${esc(JSON.stringify(row.sessions, null, 2))}</pre>
+    <h4>MFA factors (${row.mfa_factors.length})</h4><pre>${esc(JSON.stringify(row.mfa_factors, null, 2))}</pre>
+    <h4>Audit events: ${row.audit_events}</h4>
+    <div class="modal-actions"><button class="btn" onclick="modalClose()">Close</button></div>`);
+};
+window.deleteUser = async (id) => {
+  if (!confirm('Delete user ' + id + '?')) return;
+  let r = await api('/auth/users/' + encodeURIComponent(id), { method: 'DELETE' });
+  if (r.status === 409 && r.data.confirmRequired) {
+    r = await api('/auth/users/' + encodeURIComponent(id) + '?confirm=' + r.data.token, { method: 'DELETE' });
+  }
+  if (r.status >= 400) alert('Error: ' + (r.data && r.data.error));
+  loadAuth();
+};
+document.getElementById('new-user-btn').addEventListener('click', () => {
+  modalOpen(`<h3>Create user</h3>
+    <div class="field"><label>Email</label><input id="nu-email"></div>
+    <div class="field"><label>Password</label><input id="nu-pass" type="password"></div>
+    <div class="field"><label><input type="checkbox" id="nu-conf" checked> auto-confirm email</label></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="modalClose()">Cancel</button>
+      <button class="btn primary" id="nu-create">Create</button>
+    </div>`);
+  document.getElementById('nu-create').onclick = async () => {
+    const body = {
+      email: document.getElementById('nu-email').value,
+      password: document.getElementById('nu-pass').value,
+      email_confirm: document.getElementById('nu-conf').checked,
+    };
+    const r = await api('/auth/users', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    if (r.status >= 400) { alert('Error: ' + (r.data && r.data.error || r.data.message)); return; }
+    modalClose(); loadAuth();
+  };
+});
+
+// ---- Storage ----
+async function loadBuckets() {
+  const rows = await fetch(API + '/storage/buckets').then(r => r.json());
+  const el = document.getElementById('buckets-list');
+  if (rows.error) { el.innerHTML = '<div class="err">' + esc(rows.error) + '</div>'; return; }
+  if (!Array.isArray(rows) || !rows.length) { el.innerHTML = '<div class="empty">No buckets.</div>'; return; }
+  el.innerHTML = '<table><thead><tr><th>Name</th><th>Public</th><th>Size limit</th><th>MIME types</th><th></th></tr></thead><tbody>'
+    + rows.map(b => `<tr>
+        <td>${esc(b.name)}</td>
+        <td>${b.public ? '<span class="chip ok">yes</span>' : '<span class="chip">no</span>'}</td>
+        <td>${b.file_size_limit ? (b.file_size_limit / 1048576).toFixed(1) + ' MB' : '-'}</td>
+        <td>${esc((b.allowed_mime_types || []).join(',') || '*')}</td>
+        <td class="row-actions">
+          <button class="btn sm danger" onclick="emptyBucket('${esc(b.id)}')">Empty</button>
+          <button class="btn sm danger" onclick="deleteBucket('${esc(b.id)}')">Delete</button>
+        </td>
+      </tr>`).join('') + '</tbody></table>';
+}
+window.emptyBucket = async (id) => {
+  if (!confirm('Empty bucket ' + id + '? Deletes ALL objects.')) return;
+  let r = await api('/storage/buckets/' + encodeURIComponent(id) + '/empty', { method: 'POST' });
+  if (r.status === 409 && r.data.confirmRequired) {
+    r = await api('/storage/buckets/' + encodeURIComponent(id) + '/empty?confirm=' + r.data.token, { method: 'POST' });
+  }
+  if (r.status >= 400) alert('Error: ' + (r.data && r.data.error));
+  loadBuckets();
+};
+window.deleteBucket = async (id) => {
+  if (!confirm('Delete bucket ' + id + '?')) return;
+  const r = await api('/storage/buckets/' + encodeURIComponent(id), { method: 'DELETE' });
+  if (r.status >= 400) alert('Error: ' + (r.data && r.data.error));
+  loadBuckets();
+};
+document.getElementById('new-bucket-btn').addEventListener('click', () => {
+  modalOpen(`<h3>New bucket</h3>
+    <div class="field"><label>Bucket ID</label><input id="nb-id"></div>
+    <div class="field"><label><input type="checkbox" id="nb-pub"> public</label></div>
+    <div class="field"><label>File size limit (MB, optional)</label><input id="nb-size" type="number"></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="modalClose()">Cancel</button>
+      <button class="btn primary" id="nb-create">Create</button>
+    </div>`);
+  document.getElementById('nb-create').onclick = async () => {
+    const body = { id: document.getElementById('nb-id').value, name: document.getElementById('nb-id').value, public: document.getElementById('nb-pub').checked };
+    const size = document.getElementById('nb-size').value;
+    if (size) body.file_size_limit = parseInt(size) * 1048576;
+    const r = await api('/storage/buckets', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    if (r.status >= 400) { alert('Error: ' + (r.data && r.data.error)); return; }
+    modalClose(); loadBuckets();
+  };
+});
+
+// ---- Functions ----
+async function loadFns() {
+  const rows = await fetch(API + '/edge/functions').then(r => r.json());
+  const el = document.getElementById('fns-list');
+  if (rows.error) { el.innerHTML = '<div class="err">' + esc(rows.error) + '</div>'; return; }
+  if (!Array.isArray(rows) || !rows.length) { el.innerHTML = '<div class="empty">No edge functions.</div>'; return; }
+  el.innerHTML = '<table><thead><tr><th>Slug</th><th>Status</th><th>Verify JWT</th><th>Updated</th><th></th></tr></thead><tbody>'
+    + rows.map(f => `<tr>
+        <td>${esc(f.slug)}</td>
+        <td><span class="chip ${f.status==='ACTIVE'?'ok':''}">${esc(f.status)}</span></td>
+        <td>${f.verify_jwt ? 'yes' : 'no'}</td>
+        <td>${f.updated_at ? new Date(f.updated_at).toLocaleString() : ''}</td>
+        <td class="row-actions">
+          <button class="btn sm" onclick="viewFnBody('${esc(f.slug)}')">View body</button>
+          <button class="btn sm" onclick="invokeFn('${esc(f.slug)}')">Invoke</button>
+        </td>
+      </tr>`).join('') + '</tbody></table>';
+}
+window.viewFnBody = async (slug) => {
+  const r = await api('/edge/functions/' + encodeURIComponent(slug) + '/body');
+  if (r.status >= 400) { alert('Error: ' + (r.data && r.data.error)); return; }
+  const body = typeof r.data === 'string' ? r.data : (r.data.body || JSON.stringify(r.data, null, 2));
+  modalOpen(`<h3>${esc(slug)} - body</h3><pre style="max-height:60vh;overflow:auto">${esc(body)}</pre>
+    <div class="modal-actions"><button class="btn" onclick="modalClose()">Close</button></div>`);
+};
+window.invokeFn = async (slug) => {
+  const body = prompt('JSON body:', '{}');
+  if (body == null) return;
+  const r = await api('/edge/invoke/' + encodeURIComponent(slug), { method: 'POST', headers: {'Content-Type':'application/json'}, body });
+  alert('Status ' + r.status + '\n\n' + JSON.stringify(r.data, null, 2).slice(0, 1000));
+};
+
+// ---- Stats ----
+document.querySelectorAll('[data-stats]').forEach(b => {
+  b.addEventListener('click', () => {
+    document.querySelectorAll('[data-stats]').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    loadStats(b.dataset.stats);
+  });
+});
+async function loadStats(kind) {
+  const el = document.getElementById('stats-result');
+  el.innerHTML = '<div class="empty">Loading...</div>';
+  const path = kind.startsWith('auth/') ? ('/stats/' + kind) : ('/stats/' + kind);
+  const { status, data } = await api(path);
+  if (status >= 400) { el.innerHTML = '<div class="err">' + esc((data && data.error) || 'Error') + '</div>'; return; }
+  renderRows(el, data);
+}
+
+// ---- Advisors ----
+async function loadAdvisors(kind) {
+  document.querySelectorAll('#adv-sec, #adv-perf').forEach(b => b.classList.remove('active'));
+  document.getElementById('adv-' + (kind === 'security' ? 'sec' : 'perf')).classList.add('active');
+  const r = await fetch(API + '/advisors/' + kind).then(r => r.json());
+  const el = document.getElementById('adv-list');
+  if (r.error) { el.innerHTML = '<div class="err">' + esc(r.error) + '</div>'; return; }
+  const lints = r.lints || r;
+  if (!Array.isArray(lints) || !lints.length) { el.innerHTML = '<div class="empty">All clear.</div>'; return; }
+  el.innerHTML = lints.map(l => `<div style="padding:8px 10px;margin-bottom:6px;border:1px solid var(--surface1);border-radius:var(--radius)"><b>[${esc(l.level)}] ${esc(l.title || l.name)}</b><div class="kv">${esc(l.description || l.detail || '')}</div></div>`).join('');
+}
+
+// ---- Secrets ----
+async function loadSecrets() {
+  const rows = await fetch(API + '/secrets').then(r => r.json());
+  const el = document.getElementById('secrets-list');
+  if (rows.error) { el.innerHTML = '<div class="err">' + esc(rows.error) + '</div>'; return; }
+  if (!Array.isArray(rows) || !rows.length) { el.innerHTML = '<div class="empty">No secrets set.</div>'; return; }
+  el.innerHTML = '<table><thead><tr><th>Name</th><th>Updated</th><th></th></tr></thead><tbody>'
+    + rows.map(s => `<tr>
+        <td>${esc(s.name)}</td>
+        <td>${s.updated_at ? new Date(s.updated_at).toLocaleString() : '-'}</td>
+        <td class="row-actions"><button class="btn sm danger" onclick="delSecret('${esc(s.name)}')">Delete</button></td>
+      </tr>`).join('') + '</tbody></table>';
+}
+window.delSecret = async (name) => {
+  if (!confirm('Delete secret ' + name + '?')) return;
+  await fetch(API + '/secrets', { method: 'DELETE', headers: {'Content-Type':'application/json'}, body: JSON.stringify([name]) });
+  loadSecrets();
+};
+document.getElementById('new-secret-btn').addEventListener('click', () => {
+  modalOpen(`<h3>Set secret</h3>
+    <div class="field"><label>Name</label><input id="ns-name" placeholder="MY_API_KEY"></div>
+    <div class="field"><label>Value</label><input id="ns-val" type="password"></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="modalClose()">Cancel</button>
+      <button class="btn primary" id="ns-save">Save</button>
+    </div>`);
+  document.getElementById('ns-save').onclick = async () => {
+    const name = document.getElementById('ns-name').value;
+    const value = document.getElementById('ns-val').value;
+    if (!name || !value) return;
+    const r = await api('/secrets', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify([{name, value}]) });
+    if (r.status >= 400) { alert('Error: ' + (r.data && r.data.error)); return; }
+    modalClose(); loadSecrets();
+  };
+});
+
+// ---- Billing ----
+async function loadBilling() {
+  const diskEl = document.getElementById('billing-disk');
+  const addonEl = document.getElementById('billing-addons');
+  diskEl.innerHTML = '<div class="empty">Loading...</div>';
+  addonEl.innerHTML = '';
+  const disk = await api('/mgmt/disk');
+  const util = await api('/mgmt/disk/util');
+  const addons = await api('/mgmt/addons');
+
+  if (disk.status < 400 && disk.data) {
+    diskEl.innerHTML = `<div class="cards">
+      ${card('Disk size', fmtBytes((disk.data.size_gb || 0) * 1073741824), disk.data.type || '-')}
+      ${card('IOPS', disk.data.iops || '-', 'provisioned')}
+      ${card('Throughput', disk.data.throughput_mbps ? disk.data.throughput_mbps + ' MB/s' : '-', '')}
+      ${card('Used', util.status < 400 && util.data && util.data.used_pct != null ? (util.data.used_pct + '%') : '-', '')}
+    </div>`;
+  } else {
+    diskEl.innerHTML = '<div class="empty">Disk info unavailable.</div>';
+  }
+
+  if (addons.status < 400 && addons.data) {
+    const selected = addons.data.selected_addons || [];
+    const available = addons.data.available_addons || [];
+    addonEl.innerHTML = (selected.length ? '<h4>Selected</h4>' + selected.map(a => `
+      <div style="padding:8px;margin-bottom:6px;border:1px solid var(--surface1);border-radius:var(--radius)">
+        <b>${esc(a.type)}</b> - ${esc(a.variant && a.variant.identifier || a.variant && a.variant.name || '')}
+        <button class="btn sm danger" style="float:right" onclick="removeAddon('${esc(a.variant && a.variant.identifier)}')">Remove</button>
+      </div>`).join('') : '<div class="empty">No addons selected.</div>')
+      + (available.length ? '<h4>Available</h4>' + available.map(a => `
+        <div style="padding:8px;margin-bottom:6px;border:1px solid var(--surface1);border-radius:var(--radius)">
+          <b>${esc(a.type)}</b> - ${esc(a.name)}
+        </div>`).join('') : '');
+  } else {
+    addonEl.innerHTML = '<div class="empty">Billing info unavailable (needs Management token + Pro plan).</div>';
+  }
+}
+window.removeAddon = async (variant) => {
+  if (!confirm('Remove addon ' + variant + '?')) return;
+  let r = await api('/mgmt/addons/' + encodeURIComponent(variant), { method: 'DELETE' });
+  if (r.status === 409 && r.data.confirmRequired) {
+    r = await api('/mgmt/addons/' + encodeURIComponent(variant) + '?confirm=' + r.data.token, { method: 'DELETE' });
+  }
+  if (r.status >= 400) alert('Error: ' + (r.data && r.data.error));
+  loadBilling();
+};
+document.getElementById('reload-billing').addEventListener('click', loadBilling);
+
+// ---- Config ----
+document.querySelectorAll('[data-cfg]').forEach(b => {
+  b.addEventListener('click', () => {
+    document.querySelectorAll('[data-cfg]').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    loadCfg(b.dataset.cfg);
+  });
+});
+async function loadCfg(kind) {
+  const el = document.getElementById('cfg-view');
+  el.innerHTML = '<div class="empty">Loading...</div>';
+  let path;
+  switch (kind) {
+    case 'postgres': path = '/mgmt/postgres-config'; break;
+    case 'auth': path = '/auth/config'; break;
+    default: path = '/' + kind; break;
+  }
+  const { status, data } = await api(path);
+  if (status >= 400) { el.innerHTML = '<div class="err">' + esc((data && data.error) || 'Error') + '</div>'; return; }
+  el.innerHTML = '<pre>' + esc(JSON.stringify(data, null, 2)) + '</pre>';
+}
+
+// ---- Tab activation ----
+function onTabActivate(name) {
+  if (name === 'overview') loadOverview();
+  else if (name === 'projects') loadProjectsTab();
+  else if (name === 'orgs') loadOrgs();
+  else if (name === 'tables') loadSchemas();
+  else if (name === 'auth') loadAuth();
+  else if (name === 'storage') loadBuckets();
+  else if (name === 'functions') loadFns();
+  else if (name === 'stats') loadStats('db');
+  else if (name === 'advisors') loadAdvisors('security');
+  else if (name === 'secrets') loadSecrets();
+  else if (name === 'billing') loadBilling();
+  else if (name === 'config') loadCfg('postgres');
+}
+
+document.getElementById('refresh-btn').addEventListener('click', () => { loadProjects(); loadOverview(); });
+document.getElementById('reload-tables').addEventListener('click', loadTables);
+document.getElementById('reload-auth').addEventListener('click', loadAuth);
+document.getElementById('reload-buckets').addEventListener('click', loadBuckets);
+document.getElementById('reload-fns').addEventListener('click', loadFns);
+document.getElementById('reload-secrets').addEventListener('click', loadSecrets);
+document.getElementById('adv-sec').addEventListener('click', () => loadAdvisors('security'));
+document.getElementById('adv-perf').addEventListener('click', () => loadAdvisors('performance'));
+
+loadProjects().then(loadOverview);
+</script>
+
+</body>
+</html>

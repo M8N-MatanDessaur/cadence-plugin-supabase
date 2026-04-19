@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Supabase Projects</title>
+<script src="/plugins/sdk/symphonee-sdk.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { padding: 0; margin: 0; font-family: var(--font-ui); color: var(--text); background: transparent; }
+  .section-desc { font-size: 11px; color: var(--subtext0); margin-bottom: 14px; }
+  .pat-block {
+    padding: 12px; margin-bottom: 16px; background: var(--surface0);
+    border: 1px solid var(--surface1); border-radius: var(--radius, 6px);
+  }
+  .pat-block .pat-label { font-size: 11px; color: var(--subtext0); margin-bottom: 4px; font-weight: 600; }
+  .pat-row { display: flex; gap: 6px; }
+  .pat-row input {
+    flex: 1; padding: 6px 8px; background: var(--base);
+    border: 1px solid var(--surface1); border-radius: var(--radius, 6px);
+    color: var(--text); font: 12px var(--font-ui); outline: none;
+  }
+  .pat-row input:focus { border-color: var(--accent); }
+  .pat-row button {
+    padding: 6px 12px; background: var(--accent); color: var(--crust); border: none;
+    border-radius: var(--radius, 6px); cursor: pointer; font: 600 11px var(--font-ui);
+  }
+  .pat-row button:hover { filter: brightness(1.1); }
+  .pat-hint { font-size: 10px; color: var(--subtext0); margin-top: 6px; }
+  .pat-status { font-size: 11px; margin-top: 6px; }
+  .pat-status.ok { color: var(--green); }
+  .pat-status.err { color: var(--red); }
+
+  .project-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
+  .project-card {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 12px; background: var(--surface0);
+    border: 1px solid var(--surface1); border-radius: var(--radius, 6px);
+  }
+  .project-card.active { border-color: var(--accent); }
+  .project-card .dot {
+    width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+    background: var(--surface1);
+  }
+  .project-card.active .dot { background: var(--green); }
+  .project-info { flex: 1; min-width: 0; }
+  .project-name { font-size: 12px; font-weight: 600; }
+  .project-meta { font-size: 10px; color: var(--subtext0); }
+  .project-actions { display: flex; gap: 4px; }
+  .project-actions button {
+    padding: 3px 8px; font-size: 10px; background: transparent;
+    border: 1px solid var(--surface1); border-radius: var(--radius, 6px);
+    color: var(--subtext1); cursor: pointer; font-family: var(--font-ui);
+  }
+  .project-actions button:hover { border-color: var(--accent); color: var(--text); }
+  .project-actions button.danger:hover { border-color: var(--red); color: var(--red); }
+
+  .empty-msg { font-size: 12px; color: var(--subtext0); padding: 12px 0; }
+
+  .form-area {
+    padding: 14px; background: var(--surface0);
+    border: 1px solid var(--surface1); border-radius: var(--radius, 6px);
+  }
+  .form-title { font-size: 12px; font-weight: 600; margin-bottom: 12px; }
+  .field { margin-bottom: 10px; }
+  .field label { display: block; font-size: 11px; color: var(--subtext0); margin-bottom: 3px; }
+  .field input {
+    width: 100%; padding: 6px 8px; background: var(--base);
+    border: 1px solid var(--surface1); border-radius: var(--radius, 6px);
+    color: var(--text); font: 12px var(--font-ui); outline: none;
+  }
+  .field input:focus { border-color: var(--accent); }
+  .form-btns { display: flex; gap: 6px; margin-top: 14px; }
+  .btn {
+    padding: 6px 14px; font: 11px var(--font-ui); cursor: pointer;
+    border-radius: var(--radius, 6px); border: 1px solid var(--surface1);
+    background: var(--surface0); color: var(--text);
+  }
+  .btn:hover { border-color: var(--accent); }
+  .btn.primary { background: var(--accent); color: var(--crust); border-color: transparent; font-weight: 600; }
+  .btn.primary:hover { filter: brightness(1.1); }
+  .add-btn { margin-bottom: 16px; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+
+<div class="section-desc">
+  One Management Personal Access Token (PAT) is stored at the plugin level and used for every project.
+  Create one at supabase.com -> Account -> Access Tokens.
+</div>
+
+<div class="pat-block">
+  <div class="pat-label">Management Personal Access Token</div>
+  <div class="pat-row">
+    <input type="password" id="pat" placeholder="sb_pat_...">
+    <button id="save-pat">Save</button>
+  </div>
+  <div class="pat-hint">Used for SQL, project admin, edge function deploy, and config changes.</div>
+  <div class="pat-status" id="pat-status"></div>
+</div>
+
+<button class="btn primary add-btn" id="add-btn">+ Add Project</button>
+
+<div class="project-list" id="project-list"></div>
+
+<div class="form-area hidden" id="form-area">
+  <div class="form-title" id="form-title">Add Project</div>
+  <div class="field">
+    <label>Name (any label you like)</label>
+    <input type="text" id="f-name" placeholder="Production">
+  </div>
+  <div class="field">
+    <label>Project Ref (the subdomain of supabase.co)</label>
+    <input type="text" id="f-ref" placeholder="abcdefghijklmnop">
+  </div>
+  <div class="field">
+    <label>URL (auto-filled from ref if blank)</label>
+    <input type="text" id="f-url" placeholder="https://abcdefghijklmnop.supabase.co">
+  </div>
+  <div class="field">
+    <label>Service Role Key (keep secret)</label>
+    <input type="password" id="f-service" placeholder="sb_secret_... or eyJ...">
+  </div>
+  <div class="field">
+    <label>Anon Key (public-safe)</label>
+    <input type="password" id="f-anon" placeholder="sb_publishable_... or eyJ...">
+  </div>
+  <div class="field">
+    <label>Local Repo Path (optional)</label>
+    <input type="text" id="f-repo" placeholder="C:/Code/my-app">
+  </div>
+  <div class="form-btns">
+    <button class="btn primary" id="save-btn">Save</button>
+    <button class="btn" id="cancel-btn">Cancel</button>
+  </div>
+</div>
+
+<script>
+const API = 'http://127.0.0.1:3800/api/plugins/supabase';
+let editingName = null;
+
+async function load() {
+  const r = await fetch(API + '/projects').then(r => r.json());
+  renderPatStatus(r.managementTokenSet);
+  renderList(r.projects || [], r.activeProject);
+}
+
+function renderPatStatus(isSet) {
+  const el = document.getElementById('pat-status');
+  el.className = 'pat-status ' + (isSet ? 'ok' : 'err');
+  el.textContent = isSet ? 'PAT saved.' : 'No PAT yet.';
+}
+
+function renderList(projects, active) {
+  const list = document.getElementById('project-list');
+  if (!projects.length) {
+    list.innerHTML = '<div class="empty-msg">No projects configured.</div>';
+    return;
+  }
+  list.innerHTML = projects.map(p => `
+    <div class="project-card ${p.name === active ? 'active' : ''}">
+      <div class="dot"></div>
+      <div class="project-info">
+        <div class="project-name">${esc(p.name)}</div>
+        <div class="project-meta">${esc(p.projectRef)} -- ${esc(p.url || '')}</div>
+      </div>
+      <div class="project-actions">
+        <button data-act="activate" data-name="${esc(p.name)}">Activate</button>
+        <button data-act="edit" data-name="${esc(p.name)}">Edit</button>
+        <button data-act="delete" data-name="${esc(p.name)}" class="danger">Delete</button>
+      </div>
+    </div>
+  `).join('');
+  list.querySelectorAll('button').forEach(btn => {
+    btn.addEventListener('click', onAction);
+  });
+}
+
+function esc(s) { return String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
+
+async function onAction(e) {
+  const act = e.currentTarget.dataset.act;
+  const name = e.currentTarget.dataset.name;
+  if (act === 'activate') {
+    await fetch(API + '/projects/active', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name})
+    });
+    load();
+  } else if (act === 'delete') {
+    if (!confirm('Remove "' + name + '" from this plugin? (Does NOT delete the Supabase project.)')) return;
+    await fetch(API + '/projects/' + encodeURIComponent(name), {method: 'DELETE'});
+    load();
+  } else if (act === 'edit') {
+    const r = await fetch(API + '/projects').then(r => r.json());
+    const p = (r.projects || []).find(x => x.name === name);
+    if (!p) return;
+    editingName = name;
+    document.getElementById('form-title').textContent = 'Edit Project';
+    document.getElementById('f-name').value = p.name;
+    document.getElementById('f-ref').value = p.projectRef;
+    document.getElementById('f-url').value = p.url || '';
+    document.getElementById('f-service').value = '';
+    document.getElementById('f-anon').value = '';
+    document.getElementById('f-repo').value = p.repoPath || '';
+    document.getElementById('form-area').classList.remove('hidden');
+  }
+}
+
+document.getElementById('save-pat').addEventListener('click', async () => {
+  const token = document.getElementById('pat').value.trim();
+  await fetch(API + '/config', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({managementToken: token})
+  });
+  document.getElementById('pat').value = '';
+  load();
+});
+
+document.getElementById('add-btn').addEventListener('click', () => {
+  editingName = null;
+  document.getElementById('form-title').textContent = 'Add Project';
+  ['f-name','f-ref','f-url','f-service','f-anon','f-repo'].forEach(id => {
+    document.getElementById(id).value = '';
+  });
+  document.getElementById('form-area').classList.remove('hidden');
+});
+
+document.getElementById('cancel-btn').addEventListener('click', () => {
+  document.getElementById('form-area').classList.add('hidden');
+});
+
+document.getElementById('save-btn').addEventListener('click', async () => {
+  const payload = {
+    name: document.getElementById('f-name').value.trim(),
+    projectRef: document.getElementById('f-ref').value.trim(),
+    url: document.getElementById('f-url').value.trim(),
+    serviceRoleKey: document.getElementById('f-service').value.trim(),
+    anonKey: document.getElementById('f-anon').value.trim(),
+    repoPath: document.getElementById('f-repo').value.trim(),
+  };
+  if (!payload.name || !payload.projectRef) {
+    alert('Name and Project Ref are required.');
+    return;
+  }
+  if (!payload.url) payload.url = 'https://' + payload.projectRef + '.supabase.co';
+
+  let r;
+  if (editingName) {
+    r = await fetch(API + '/projects/' + encodeURIComponent(editingName), {
+      method: 'PUT', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    }).then(r => r.json());
+  } else {
+    r = await fetch(API + '/projects', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    }).then(r => r.json());
+  }
+  if (r.error) { alert(r.error); return; }
+  document.getElementById('form-area').classList.add('hidden');
+  load();
+});
+
+load();
+</script>
+
+</body>
+</html>
