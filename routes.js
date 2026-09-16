@@ -44,11 +44,30 @@ function saveCfg(cfg) {
   fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2), 'utf8');
 }
 
+// The project a request asked for by name or by repository path; set at the top of the request
+// handler and read synchronously by getActiveProject() before the handler's first await.
+let requestProject = null;
+const normPath = (v) => String(v || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+function projectForRepo(c, repoPath) {
+  const want = normPath(repoPath);
+  if (!want) return null;
+  return c.projects.find(p => p.repoPath && normPath(p.repoPath) === want)
+    || c.projects.find(p => p.repoPath && (want.startsWith(normPath(p.repoPath) + '/') || normPath(p.repoPath).startsWith(want + '/')))
+    || null;
+}
+function sqlLiteral(v) { return `'${String(v).replace(/'/g, "''")}'`; }
 function getActiveProject(cfg) {
   const c = cfg || readCfg();
   if (!c.projects.length) return null;
+  if (requestProject) {
+    const byName = c.projects.find(p => p.name === requestProject.name);
+    if (byName) return byName;
+    const byRepo = projectForRepo(c, requestProject.repo);
+    if (byRepo) return byRepo;
+  }
   return c.projects.find(p => p.name === c.activeProject) || c.projects[0];
 }
+const overviewCache = new Map();
 
 function hasPat() {
   return !!readCfg().managementToken;
@@ -101,7 +120,7 @@ function managementHeaders(cfg) {
   return {
     'Authorization': `Bearer ${cfg.managementToken}`,
     'Content-Type': 'application/json',
-    'User-Agent': 'Symphonee-Supabase-Plugin',
+    'User-Agent': 'Cadence-Supabase-Plugin',
   };
 }
 
@@ -110,7 +129,7 @@ function projectHeaders(p, extra) {
     'apikey': p.serviceRoleKey,
     'Authorization': `Bearer ${p.serviceRoleKey}`,
     'Content-Type': 'application/json',
-    'User-Agent': 'Symphonee-Supabase-Plugin',
+    'User-Agent': 'Cadence-Supabase-Plugin',
   }, extra || {});
 }
 
@@ -204,11 +223,45 @@ function qualified(schema, table) {
 
 // -- Route Registration ------------------------------------------------------
 
-module.exports = function ({ addPrefixRoute, json, readBody }) {
+
+// ---- Attention: what the Plugins home shows on this app's tile. Reads the plugin's own
+// routes over loopback (they carry their caches), never writes, answers within a minute.
+const __attention = { value: null, until: 0 };
+function __selfGet(req, path, timeoutMs) {
+  return new Promise((resolve) => {
+    const host = req.headers.host || `127.0.0.1:${process.env.CADENCE_PORT || 3801}`;
+    const lib = require('http');
+    const r = lib.get({ host: host.split(':')[0], port: Number(host.split(':')[1] || 80), path, headers: { 'x-cadence-internal': '1' } }, (resp) => { let d = ''; resp.on('data', (c) => { d += c; }); resp.on('end', () => { try { resolve(resp.statusCode < 400 ? JSON.parse(d) : null); } catch (_) { resolve(null); } }); });
+    r.on('error', () => resolve(null));
+    r.setTimeout(timeoutMs || 45000, () => { r.destroy(); resolve(null); });
+  });
+}
+function __attentionOut(items) {
+  const rank = { error: 3, warn: 2, warning: 2, info: 1 };
+  const list = (items || []).filter((i) => i && i.text).map((i) => ({ level: i.level === 'warning' ? 'warn' : (i.level || 'info'), text: String(i.text) }));
+  const level = list.reduce((top, i) => (rank[i.level] > rank[top] ? i.level : top), list.length ? 'info' : 'ok');
+  return { count: list.length, level, items: list, readAt: new Date().toISOString() };
+}
+async function __attentionHandler(req, res, url, compute, json) {
+  if (__attention.value && __attention.until > Date.now() && url.searchParams.get('refresh') !== '1') return json(res, __attention.value);
+  let out;
+  try { out = __attentionOut(await compute(req)); } catch (e) { out = { count: 0, level: 'ok', items: [], error: e.message, readAt: new Date().toISOString() }; }
+  __attention.value = out; __attention.until = Date.now() + 60000;
+  return json(res, out);
+}
+
+module.exports = function ({ addRoute, addPrefixRoute, json, readBody, shell }) {
+  addRoute('GET', '/attention', (req, res, url) => __attentionHandler(req, res, url, async (req) => { const o = await __selfGet(req, '/api/plugins/supabase/overview', 90000); return (o && o.issues || []).map((i) => ({ level: i.level, text: i.text })); }, json));
+  const permGate = shell && typeof shell.permGate === 'function' ? shell.permGate : null;
+  const gate = async (res, route, label) => (permGate ? permGate(res, 'api', route, label) : true);
 
   addPrefixRoute(async (req, res, url, subpath) => {
     const method = req.method;
     sweepConfirms();
+    // The workbench's fetch throws on 409 and drops the body, so a screen asks for a soft answer: the
+    // same confirm payload with a 200, and it does the retry with the token itself.
+    const soft409 = url.searchParams.get('soft') === '1' ? 200 : 409;
+    requestProject = (url.searchParams.get('project') || url.searchParams.get('repo')) ? { name: url.searchParams.get('project') || '', repo: url.searchParams.get('repo') || '' } : null;
 
     try {
       // =====================================================================
@@ -236,7 +289,8 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
       if (subpath === '/config' && method === 'POST') {
         const body = await readBody(req);
         const cfg = readCfg();
-        if (body.managementToken !== undefined) cfg.managementToken = String(body.managementToken || '').trim();
+        // A blank token keeps the stored one.
+        if (body.managementToken !== undefined && String(body.managementToken || '').trim()) cfg.managementToken = String(body.managementToken).trim();
         saveCfg(cfg);
         return json(res, { ok: true });
       }
@@ -265,7 +319,7 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
         const cfg = readCfg();
         const name = String(body.name).trim();
         if (cfg.projects.find(p => p.name === name)) {
-          return json(res, { error: 'A project with that name already exists' }, 409);
+          return json(res, { error: 'A project with that name already exists' }, soft409);
         }
         cfg.projects.push({
           name,
@@ -293,7 +347,7 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
       }
 
       const projByName = subpath.match(/^\/projects\/([^/]+)$/);
-      if (projByName && projByName[1] !== 'active' && method === 'PUT') {
+      if (projByName && projByName[1] !== 'active' && (method === 'PUT' || method === 'PATCH')) {
         const target = decodeURIComponent(projByName[1]);
         const cfg = readCfg();
         const idx = cfg.projects.findIndex(p => p.name === target);
@@ -302,15 +356,19 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
         if (body.name !== undefined) {
           const newName = String(body.name).trim();
           if (newName !== target && cfg.projects.find(p => p.name === newName)) {
-            return json(res, { error: 'Name already used' }, 409);
+            return json(res, { error: 'Name already used' }, soft409);
           }
           if (cfg.activeProject === target) cfg.activeProject = newName;
           cfg.projects[idx].name = newName;
         }
         ['projectRef', 'serviceRoleKey', 'anonKey', 'url', 'repoPath'].forEach(k => {
-          if (body[k] !== undefined) cfg.projects[idx][k] = String(body[k] || '').trim().replace(/\/+$/, k === 'url' ? '' : undefined);
+          if (body[k] === undefined) return;
+          // A blank key keeps the stored one; the form never has to show it.
+          if ((k === 'serviceRoleKey' || k === 'anonKey') && !String(body[k] || '').trim()) return;
+          cfg.projects[idx][k] = String(body[k] || '').trim().replace(/\/+$/, '');
         });
         saveCfg(cfg);
+        overviewCache.clear();
         return json(res, { ok: true });
       }
 
@@ -319,6 +377,7 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
         const cfg = readCfg();
         const idx = cfg.projects.findIndex(p => p.name === target);
         if (idx < 0) return json(res, { error: 'Project not found' }, 404);
+        if (!(await gate(res, 'DELETE /api/plugins/supabase/projects', `Forget the Supabase project ${target}`))) return;
         cfg.projects.splice(idx, 1);
         if (cfg.activeProject === target) cfg.activeProject = cfg.projects[0] ? cfg.projects[0].name : '';
         saveCfg(cfg);
@@ -425,6 +484,7 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
 
       // Project lifecycle: gated
       if (subpath === '/mgmt/project/pause' && method === 'POST') {
+        if (!(await gate(res, 'POST /api/plugins/supabase/mgmt/project/pause', 'Pause the Supabase project'))) return;
         const cfg = readCfg();
         const active = getActiveProject(cfg);
         if (!cfg.managementToken) return json(res, { error: 'Management token not configured' }, 401);
@@ -432,7 +492,7 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
         const confirm = url.searchParams.get('confirm');
         if (!confirm) {
           const token = issueConfirmToken('project:pause', { projectRef: active.projectRef });
-          return json(res, { confirmRequired: true, action: 'pause project', projectRef: active.projectRef, token, retryWith: `?confirm=${token}` }, 409);
+          return json(res, { confirmRequired: true, action: 'pause project', projectRef: active.projectRef, token, retryWith: `?confirm=${token}` }, soft409);
         }
         const payload = consumeConfirmToken(confirm, 'project:pause');
         if (!payload || payload.projectRef !== active.projectRef) return json(res, { error: 'Invalid or expired confirmation token' }, 403);
@@ -448,7 +508,7 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
         const confirm = url.searchParams.get('confirm');
         if (!confirm) {
           const token = issueConfirmToken('project:restore', { projectRef: active.projectRef });
-          return json(res, { confirmRequired: true, action: 'restore project', projectRef: active.projectRef, token, retryWith: `?confirm=${token}` }, 409);
+          return json(res, { confirmRequired: true, action: 'restore project', projectRef: active.projectRef, token, retryWith: `?confirm=${token}` }, soft409);
         }
         const payload = consumeConfirmToken(confirm, 'project:restore');
         if (!payload || payload.projectRef !== active.projectRef) return json(res, { error: 'Invalid or expired confirmation token' }, 403);
@@ -457,6 +517,7 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
       }
 
       if (subpath === '/mgmt/project' && method === 'DELETE') {
+        if (!(await gate(res, 'DELETE /api/plugins/supabase/mgmt/project', 'Delete the Supabase cloud project'))) return;
         const cfg = readCfg();
         const active = getActiveProject(cfg);
         if (!cfg.managementToken) return json(res, { error: 'Management token not configured' }, 401);
@@ -464,7 +525,7 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
         const confirm = url.searchParams.get('confirm');
         if (!confirm) {
           const token = issueConfirmToken('project:delete', { projectRef: active.projectRef });
-          return json(res, { confirmRequired: true, action: 'DELETE PROJECT', warning: 'This is irreversible.', projectRef: active.projectRef, token, retryWith: `?confirm=${token}` }, 409);
+          return json(res, { confirmRequired: true, action: 'DELETE PROJECT', warning: 'This is irreversible.', projectRef: active.projectRef, token, retryWith: `?confirm=${token}` }, soft409);
         }
         const payload = consumeConfirmToken(confirm, 'project:delete');
         if (!payload || payload.projectRef !== active.projectRef) return json(res, { error: 'Invalid or expired confirmation token' }, 403);
@@ -487,6 +548,9 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
         }
         const confirm = url.searchParams.get('confirm');
         const { destructive, statements } = classifySql(body.query);
+        if (destructive.length > 0 && (confirm || body.force) && !(await gate(res, 'POST /api/plugins/supabase/sql', `Run destructive SQL on ${active.name}: ${destructive.map((d) => d.kind).join(', ')}`))) return;
+        if (!body.readOnly && destructive.length === 0 && !/^\s*(select|with|explain|show|table|values)\b/i.test(body.query) && !(await gate(res, 'POST /api/plugins/supabase/sql', `Run SQL that writes on ${active.name}`))) return;
+        overviewCache.clear();
         if (destructive.length > 0 && !body.force) {
           if (!confirm) {
             const token = issueConfirmToken('sql:destructive', { query: body.query, projectRef: active.projectRef });
@@ -497,7 +561,7 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
               token,
               retryWith: `?confirm=${token}`,
               note: 'Destructive SQL detected. Retry with ?confirm=<token> within 10 minutes, or set body.force=true to skip the gate.',
-            }, 409);
+            }, soft409);
           }
           const payload = consumeConfirmToken(confirm, 'sql:destructive');
           if (!payload || payload.query !== body.query || payload.projectRef !== active.projectRef) {
@@ -557,7 +621,10 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
             obj_description(c.oid) as comment,
             pg_total_relation_size(c.oid) as size_bytes,
             (select count(*) from pg_attribute a where a.attrelid = c.oid and a.attnum > 0 and not a.attisdropped) as column_count,
-            (select reltuples::bigint from pg_class where oid = c.oid) as approx_rows
+            (select reltuples::bigint from pg_class where oid = c.oid) as approx_rows,
+            c.relrowsecurity as rls_enabled,
+            (select count(*) from pg_policies p where p.schemaname = n.nspname and p.tablename = c.relname) as policies,
+            exists(select 1 from pg_index i where i.indrelid = c.oid and i.indisprimary) as has_pk
           from pg_class c
           join pg_namespace n on n.oid = c.relnamespace
           where c.relkind in ('r','v','m','p','f')
@@ -732,8 +799,8 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
         const active = getActiveProject(cfg);
         if (!cfg.managementToken || !active) return json(res, { error: 'Not configured' }, 401);
         const r = await runSql(cfg, active.projectRef, `
-          select e.extname as name, e.extversion as version, n.nspname as schema,
-                 a.available_version as latest_available,
+          select a.name as name, e.extversion as version, n.nspname as schema,
+                 a.default_version as latest_available,
                  a.installed_version is not null as installed,
                  a.comment as description
           from pg_available_extensions a
@@ -835,6 +902,7 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
         const cfg = readCfg();
         const active = getActiveProject(cfg);
         if (!cfg.managementToken || !active) return json(res, { error: 'Not configured' }, 401);
+        if (!(await gate(res, 'DELETE /api/plugins/supabase/policies', `Drop the policy ${name} on ${schema}.${table}`))) return;
         const r = await runSql(cfg, active.projectRef, `DROP POLICY IF EXISTS ${ident(name)} ON ${qualified(schema, table)}`);
         return json(res, r.data, r.status);
       }
@@ -853,6 +921,7 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
         const cfg = readCfg();
         const active = getActiveProject(cfg);
         if (!cfg.managementToken || !active) return json(res, { error: 'Not configured' }, 401);
+        if (!(await gate(res, 'POST /api/plugins/supabase/rls/disable', `Disable row level security on ${schema}.${table}`))) return;
         const r = await runSql(cfg, active.projectRef, `ALTER TABLE ${qualified(schema, table)} DISABLE ROW LEVEL SECURITY`);
         return json(res, r.data, r.status);
       }
@@ -868,12 +937,15 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
         const active = getActiveProject(cfg);
         if (!active || !isProjectConfigured(active)) return json(res, { error: 'Active project not configured' }, 401);
         const qs = new URLSearchParams(url.searchParams);
+        // Our own parameters never reach PostgREST, which would read them as filters.
+        for (const k of [...qs.keys()]) if (k.startsWith('_') || k === 'project' || k === 'repo') qs.delete(k);
         const restUrl = projectRestUrl(active, `/rest/v1/${encodeURIComponent(table)}?${qs.toString()}`);
         const headers = projectHeaders(active, {
           'Accept-Profile': url.searchParams.get('_schema') || 'public',
           'Prefer': 'count=exact',
         });
         const r = await httpsReq(restUrl, { headers });
+        if (url.searchParams.get('_meta') === '1') { const range = String(r.headers['content-range'] || ''); const total = range.includes('/') ? Number(range.split('/')[1]) : null; return json(res, { rows: Array.isArray(r.data) ? r.data : [], total: Number.isFinite(total) ? total : null, error: !Array.isArray(r.data) && r.data && r.data.message ? r.data.message : undefined }, r.status); }
         return json(res, r.data, r.status);
       }
 
@@ -901,6 +973,7 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
         if (!active || !isProjectConfigured(active)) return json(res, { error: 'Active project not configured' }, 401);
         const body = await readBody(req);
         const qs = new URLSearchParams(url.searchParams);
+        for (const k of [...qs.keys()]) if (k.startsWith('_') || k === 'project' || k === 'repo') qs.delete(k);
         const restUrl = projectRestUrl(active, `/rest/v1/${encodeURIComponent(table)}?${qs.toString()}`);
         const r = await httpsReq(restUrl, {
           method: 'PATCH',
@@ -918,9 +991,9 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
         const active = getActiveProject(cfg);
         if (!active || !isProjectConfigured(active)) return json(res, { error: 'Active project not configured' }, 401);
         const qs = new URLSearchParams(url.searchParams);
+        for (const k of [...qs.keys()]) if (k.startsWith('_') || k === 'project' || k === 'repo' || k === 'confirm') qs.delete(k);
         // Safety: require at least one filter, else gate.
-        const filterKeys = [];
-        for (const k of qs.keys()) if (!k.startsWith('_')) filterKeys.push(k);
+        const filterKeys = [...qs.keys()];
         const confirm = url.searchParams.get('confirm');
         if (filterKeys.length === 0 && !confirm) {
           const token = issueConfirmToken('rows:delete-all', { table, projectRef: active.projectRef });
@@ -928,7 +1001,7 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
             confirmRequired: true,
             warning: 'No filter provided -- this would delete ALL rows.',
             token, retryWith: `?confirm=${token}`,
-          }, 409);
+          }, soft409);
         }
         if (filterKeys.length === 0) {
           const payload = consumeConfirmToken(confirm, 'rows:delete-all');
@@ -973,6 +1046,18 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
         if (!active || !isProjectConfigured(active)) return json(res, { error: 'Active project not configured' }, 401);
         const page = url.searchParams.get('page') || '1';
         const perPage = url.searchParams.get('per_page') || '50';
+        const q = (url.searchParams.get('q') || '').trim();
+        // GoTrue's admin list has no search; with a search term and the management token, ask the database.
+        if (q && cfg.managementToken) {
+          const like = '%' + q.replace(/[%_\\]/g, (m) => '\\' + m) + '%';
+          const lim = Math.min(Math.max(parseInt(perPage, 10) || 50, 1), 500);
+          const off = (Math.max(parseInt(page, 10) || 1, 1) - 1) * lim;
+          const sql = `select id, aud, role, email, phone, email_confirmed_at, phone_confirmed_at, invited_at, confirmation_sent_at, last_sign_in_at, raw_app_meta_data as app_metadata, raw_user_meta_data as user_metadata, created_at, updated_at, banned_until, is_anonymous, (select count(*) from auth.users u2 where u2.email ilike ${sqlLiteral(like)} or u2.phone ilike ${sqlLiteral(like)} or u2.id::text = ${sqlLiteral(q)}) as _total from auth.users where email ilike ${sqlLiteral(like)} or phone ilike ${sqlLiteral(like)} or id::text = ${sqlLiteral(q)} order by created_at desc limit ${lim} offset ${off}`;
+          const rr = await runSql(cfg, active.projectRef, sql, { readOnly: true });
+          const rows = Array.isArray(rr.data) ? rr.data : [];
+          const total = rows.length ? Number(rows[0]._total) : 0;
+          return json(res, { users: rows.map(({ _total, ...u }) => u), total, aud: 'authenticated', nextPage: off + rows.length < total ? (parseInt(page, 10) || 1) + 1 : null }, rr.status >= 400 ? rr.status : 200);
+        }
         const restUrl = projectRestUrl(active, `/auth/v1/admin/users?page=${page}&per_page=${perPage}`);
         const r = await httpsReq(restUrl, { headers: projectHeaders(active) });
         return json(res, r.data, r.status);
@@ -1016,12 +1101,13 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
         const confirm = url.searchParams.get('confirm');
         if (!confirm) {
           const token = issueConfirmToken('auth:delete-user', { id, projectRef: active.projectRef });
-          return json(res, { confirmRequired: true, userId: id, token, retryWith: `?confirm=${token}` }, 409);
+          return json(res, { confirmRequired: true, userId: id, token, retryWith: `?confirm=${token}` }, soft409);
         }
         const payload = consumeConfirmToken(confirm, 'auth:delete-user');
         if (!payload || payload.id !== id || payload.projectRef !== active.projectRef) {
           return json(res, { error: 'Invalid or expired confirmation token' }, 403);
         }
+        if (!(await gate(res, 'DELETE /api/plugins/supabase/auth/users', `Delete the auth user ${id}`))) return;
         const r = await httpsReq(projectRestUrl(active, `/auth/v1/admin/users/${encodeURIComponent(id)}`), { method: 'DELETE', headers: projectHeaders(active) });
         return json(res, r.data, r.status);
       }
@@ -1056,7 +1142,7 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
         const confirm = url.searchParams.get('confirm');
         if (!confirm) {
           const token = issueConfirmToken('auth:reset', { email: body.email, projectRef: active.projectRef });
-          return json(res, { confirmRequired: true, email: body.email, token, retryWith: `?confirm=${token}` }, 409);
+          return json(res, { confirmRequired: true, email: body.email, token, retryWith: `?confirm=${token}` }, soft409);
         }
         const payload = consumeConfirmToken(confirm, 'auth:reset');
         if (!payload || payload.email !== body.email) return json(res, { error: 'Invalid or expired confirmation token' }, 403);
@@ -1129,6 +1215,7 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
         const cfg = readCfg();
         const active = getActiveProject(cfg);
         if (!active || !isProjectConfigured(active)) return json(res, { error: 'Active project not configured' }, 401);
+        if (!(await gate(res, 'DELETE /api/plugins/supabase/storage/buckets', `Delete the storage bucket ${id}`))) return;
         const r = await httpsReq(projectRestUrl(active, `/storage/v1/bucket/${encodeURIComponent(id)}`), { method: 'DELETE', headers: projectHeaders(active) });
         return json(res, r.data, r.status);
       }
@@ -1141,7 +1228,7 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
         const confirm = url.searchParams.get('confirm');
         if (!confirm) {
           const token = issueConfirmToken('bucket:empty', { id, projectRef: active.projectRef });
-          return json(res, { confirmRequired: true, bucket: id, warning: 'Deletes ALL objects in this bucket.', token, retryWith: `?confirm=${token}` }, 409);
+          return json(res, { confirmRequired: true, bucket: id, warning: 'Deletes ALL objects in this bucket.', token, retryWith: `?confirm=${token}` }, soft409);
         }
         const payload = consumeConfirmToken(confirm, 'bucket:empty');
         if (!payload || payload.id !== id) return json(res, { error: 'Invalid or expired confirmation token' }, 403);
@@ -1186,6 +1273,7 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
         if (!active || !isProjectConfigured(active)) return json(res, { error: 'Active project not configured' }, 401);
         const body = await readBody(req);
         if (!body || !Array.isArray(body.prefixes)) return json(res, { error: 'prefixes array required' }, 400);
+        if (!(await gate(res, 'DELETE /api/plugins/supabase/storage/objects', `Delete ${body.prefixes.length} object${body.prefixes.length === 1 ? '' : 's'} from ${bucket}`))) return;
         const r = await httpsReq(projectRestUrl(active, `/storage/v1/object/${encodeURIComponent(bucket)}`), {
           method: 'DELETE',
           headers: projectHeaders(active),
@@ -1256,6 +1344,7 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
         const cfg = readCfg();
         const active = getActiveProject(cfg);
         if (!cfg.managementToken || !active) return json(res, { error: 'Not configured' }, 401);
+        if (!(await gate(res, 'DELETE /api/plugins/supabase/edge/functions', `Delete the edge function ${slug}`))) return;
         const r = await httpsReq(`https://${MANAGEMENT_HOST}/v1/projects/${active.projectRef}/functions/${encodeURIComponent(slug)}`, { method: 'DELETE', headers: managementHeaders(cfg) });
         return json(res, r.data, r.status);
       }
@@ -1275,10 +1364,14 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
           body: body.body,
           verify_jwt: body.verify_jwt !== false,
         };
-        const r = await httpsReq(`https://${MANAGEMENT_HOST}/v1/projects/${active.projectRef}/functions`, {
+        let r = await httpsReq(`https://${MANAGEMENT_HOST}/v1/projects/${active.projectRef}/functions`, {
           method: 'POST',
           headers: managementHeaders(cfg),
         }, payload);
+        // The slug exists already: a new version of it, not a second function.
+        if (r.status >= 400 && r.data && /duplicated/i.test(String(r.data.message || ''))) {
+          r = await httpsReq(`https://${MANAGEMENT_HOST}/v1/projects/${active.projectRef}/functions/${encodeURIComponent(body.slug)}`, { method: 'PATCH', headers: managementHeaders(cfg) }, { name: payload.name, body: payload.body, verify_jwt: payload.verify_jwt });
+        }
         return json(res, r.data, r.status);
       }
 
@@ -1327,6 +1420,7 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
         if (!cfg.managementToken || !active) return json(res, { error: 'Not configured' }, 401);
         const body = await readBody(req);
         if (!Array.isArray(body)) return json(res, { error: 'body must be an array of secret names' }, 400);
+        if (!(await gate(res, 'DELETE /api/plugins/supabase/secrets', `Delete the secret${body.length === 1 ? '' : 's'} ${body.join(', ')}`))) return;
         const r = await httpsReq(`https://${MANAGEMENT_HOST}/v1/projects/${active.projectRef}/secrets`, {
           method: 'DELETE',
           headers: managementHeaders(cfg),
@@ -1375,7 +1469,7 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
         const confirm = url.searchParams.get('confirm');
         if (!confirm) {
           const token = issueConfirmToken('backup:restore', { projectRef: active.projectRef, body });
-          return json(res, { confirmRequired: true, warning: 'Restores the database from backup; overwrites current state.', token, retryWith: `?confirm=${token}` }, 409);
+          return json(res, { confirmRequired: true, warning: 'Restores the database from backup; overwrites current state.', token, retryWith: `?confirm=${token}` }, soft409);
         }
         const payload = consumeConfirmToken(confirm, 'backup:restore');
         if (!payload) return json(res, { error: 'Invalid or expired confirmation token' }, 403);
@@ -1685,7 +1779,7 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
           const confirm = url.searchParams.get('confirm');
           if (!confirm) {
             const token = issueConfirmToken('signing-key:delete', { id, projectRef: active.projectRef });
-            return json(res, { confirmRequired: true, warning: 'Deleting a signing key invalidates every session signed with it.', token, retryWith: `?confirm=${token}` }, 409);
+            return json(res, { confirmRequired: true, warning: 'Deleting a signing key invalidates every session signed with it.', token, retryWith: `?confirm=${token}` }, soft409);
           }
           const payload = consumeConfirmToken(confirm, 'signing-key:delete');
           if (!payload || payload.id !== id) return json(res, { error: 'Invalid or expired confirmation token' }, 403);
@@ -1978,7 +2072,7 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
         const confirm = url.searchParams.get('confirm');
         if (!confirm) {
           const token = issueConfirmToken('realtime:shutdown', { projectRef: active.projectRef });
-          return json(res, { confirmRequired: true, warning: 'Force-kills ALL Realtime connections on this project.', token, retryWith: `?confirm=${token}` }, 409);
+          return json(res, { confirmRequired: true, warning: 'Force-kills ALL Realtime connections on this project.', token, retryWith: `?confirm=${token}` }, soft409);
         }
         const payload = consumeConfirmToken(confirm, 'realtime:shutdown');
         if (!payload || payload.projectRef !== active.projectRef) return json(res, { error: 'Invalid or expired confirmation token' }, 403);
@@ -2018,7 +2112,13 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
         if (!active || !isProjectConfigured(active)) return json(res, { error: 'Active project not configured' }, 401);
         const body = await readBody(req);
         const scope = (body && body.scope) || 'global';
-        const r = await httpsReq(projectRestUrl(active, `/auth/v1/admin/users/${encodeURIComponent(id)}/sign_out?scope=${encodeURIComponent(scope)}`), { method: 'POST', headers: projectHeaders(active) });
+        // GoTrue has no admin sign-out; the sessions table is the truth. Drop the user's sessions (refresh tokens cascade).
+        if (cfg.managementToken) {
+          const rr = await runSql(cfg, active.projectRef, `with gone as (delete from auth.sessions where user_id = ${sqlLiteral(id)} returning id) select count(*)::int as sessions from gone`);
+          if (rr.status < 400) return json(res, { ok: true, userId: id, scope, sessionsEnded: Array.isArray(rr.data) && rr.data[0] ? rr.data[0].sessions : 0 });
+          return json(res, rr.data, rr.status);
+        }
+        const r = await httpsReq(projectRestUrl(active, `/auth/v1/admin/users/${encodeURIComponent(id)}/logout?scope=${encodeURIComponent(scope)}`), { method: 'POST', headers: projectHeaders(active) }, {});
         return json(res, r.data, r.status);
       }
 
@@ -2039,7 +2139,7 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
         const confirm = url.searchParams.get('confirm');
         if (!confirm) {
           const token = issueConfirmToken('db:rotate-password', { projectRef: active.projectRef });
-          return json(res, { confirmRequired: true, warning: 'Rotates Postgres password. Direct-connection clients will break.', token, retryWith: `?confirm=${token}` }, 409);
+          return json(res, { confirmRequired: true, warning: 'Rotates Postgres password. Direct-connection clients will break.', token, retryWith: `?confirm=${token}` }, soft409);
         }
         const payload = consumeConfirmToken(confirm, 'db:rotate-password');
         if (!payload || payload.projectRef !== active.projectRef) return json(res, { error: 'Invalid or expired confirmation token' }, 403);
@@ -2196,7 +2296,7 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
         const confirm = url.searchParams.get('confirm');
         if (!confirm) {
           const tok = issueConfirmToken('org:claim', { slug, token });
-          return json(res, { confirmRequired: true, warning: 'Transfers a project into this organization.', token: tok, retryWith: `?confirm=${tok}` }, 409);
+          return json(res, { confirmRequired: true, warning: 'Transfers a project into this organization.', token: tok, retryWith: `?confirm=${tok}` }, soft409);
         }
         const payload = consumeConfirmToken(confirm, 'org:claim');
         if (!payload || payload.slug !== slug || payload.token !== token) return json(res, { error: 'Invalid or expired confirmation token' }, 403);
@@ -2219,7 +2319,7 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
         const confirm = url.searchParams.get('confirm');
         if (!confirm) {
           const tok = issueConfirmToken('project:create', { name: body.name, organization_id: body.organization_id });
-          return json(res, { confirmRequired: true, warning: 'Creates a new Supabase project. Billing may apply to the organization.', name: body.name, organization_id: body.organization_id, region: body.region, plan: body.plan || 'free', token: tok, retryWith: `?confirm=${tok}` }, 409);
+          return json(res, { confirmRequired: true, warning: 'Creates a new Supabase project. Billing may apply to the organization.', name: body.name, organization_id: body.organization_id, region: body.region, plan: body.plan || 'free', token: tok, retryWith: `?confirm=${tok}` }, soft409);
         }
         const payload = consumeConfirmToken(confirm, 'project:create');
         if (!payload || payload.name !== body.name) return json(res, { error: 'Invalid or expired confirmation token' }, 403);
@@ -2231,7 +2331,10 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
       if (subpath === '/mgmt/regions' && method === 'GET') {
         const cfg = readCfg();
         if (!cfg.managementToken) return json(res, { error: 'Management token not configured' }, 401);
-        const r = await httpsReq(`https://${MANAGEMENT_HOST}/v1/projects/available-regions`, { headers: managementHeaders(cfg) });
+        // The API now wants the organization: given as ?org=<slug>, or the first one the token sees.
+        let org = url.searchParams.get('org');
+        if (!org) { const orgs = await httpsReq(`https://${MANAGEMENT_HOST}/v1/organizations`, { headers: managementHeaders(cfg) }); org = Array.isArray(orgs.data) && orgs.data[0] ? (orgs.data[0].slug || orgs.data[0].id) : ''; }
+        const r = await httpsReq(`https://${MANAGEMENT_HOST}/v1/projects/available-regions?organization_slug=${encodeURIComponent(org)}`, { headers: managementHeaders(cfg) });
         return json(res, r.data, r.status);
       }
 
@@ -2250,7 +2353,7 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
         const cfg = readCfg();
         const active = getActiveProject(cfg);
         if (!cfg.managementToken || !active) return json(res, { error: 'Not configured' }, 401);
-        const services = url.searchParams.get('services') || 'db,auth,rest,realtime,storage,functions';
+        const services = url.searchParams.get('services') || 'db,auth,rest,realtime,storage';
         const r = await httpsReq(`https://${MANAGEMENT_HOST}/v1/projects/${active.projectRef}/health?services=${encodeURIComponent(services)}`, { headers: managementHeaders(cfg) });
         return json(res, r.data, r.status);
       }
@@ -2281,7 +2384,7 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
         const confirm = url.searchParams.get('confirm');
         if (!confirm) {
           const tok = issueConfirmToken('project:restart', { projectRef: active.projectRef });
-          return json(res, { confirmRequired: true, warning: 'Restarts project services. Brief downtime.', token: tok, retryWith: `?confirm=${tok}` }, 409);
+          return json(res, { confirmRequired: true, warning: 'Restarts project services. Brief downtime.', token: tok, retryWith: `?confirm=${tok}` }, soft409);
         }
         const payload = consumeConfirmToken(confirm, 'project:restart');
         if (!payload || payload.projectRef !== active.projectRef) return json(res, { error: 'Invalid or expired confirmation token' }, 403);
@@ -2310,7 +2413,7 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
         const confirm = url.searchParams.get('confirm');
         if (!confirm) {
           const tok = issueConfirmToken('addon:apply', { projectRef: active.projectRef, payload: body });
-          return json(res, { confirmRequired: true, warning: 'Applies an addon. May change monthly cost.', addon_type: body.addon_type, addon_variant: body.addon_variant, token: tok, retryWith: `?confirm=${tok}` }, 409);
+          return json(res, { confirmRequired: true, warning: 'Applies an addon. May change monthly cost.', addon_type: body.addon_type, addon_variant: body.addon_variant, token: tok, retryWith: `?confirm=${tok}` }, soft409);
         }
         const payload = consumeConfirmToken(confirm, 'addon:apply');
         if (!payload || payload.projectRef !== active.projectRef) return json(res, { error: 'Invalid or expired confirmation token' }, 403);
@@ -2327,7 +2430,7 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
         const confirm = url.searchParams.get('confirm');
         if (!confirm) {
           const tok = issueConfirmToken('addon:remove', { projectRef: active.projectRef, variant });
-          return json(res, { confirmRequired: true, warning: 'Removes an addon. May revert compute size or remove features.', variant, token: tok, retryWith: `?confirm=${tok}` }, 409);
+          return json(res, { confirmRequired: true, warning: 'Removes an addon. May revert compute size or remove features.', variant, token: tok, retryWith: `?confirm=${tok}` }, soft409);
         }
         const payload = consumeConfirmToken(confirm, 'addon:remove');
         if (!payload || payload.projectRef !== active.projectRef || payload.variant !== variant) return json(res, { error: 'Invalid or expired confirmation token' }, 403);
@@ -2355,7 +2458,7 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
         const confirm = url.searchParams.get('confirm');
         if (!confirm) {
           const tok = issueConfirmToken('disk:modify', { projectRef: active.projectRef });
-          return json(res, { confirmRequired: true, warning: 'Modifies disk. May incur additional charges.', token: tok, retryWith: `?confirm=${tok}` }, 409);
+          return json(res, { confirmRequired: true, warning: 'Modifies disk. May incur additional charges.', token: tok, retryWith: `?confirm=${tok}` }, soft409);
         }
         const payload = consumeConfirmToken(confirm, 'disk:modify');
         if (!payload || payload.projectRef !== active.projectRef) return json(res, { error: 'Invalid or expired confirmation token' }, 403);
@@ -2391,7 +2494,7 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
         const confirm = url.searchParams.get('confirm');
         if (!confirm) {
           const tok = issueConfirmToken('pgconfig:update', { projectRef: active.projectRef });
-          return json(res, { confirmRequired: true, warning: 'Updates Postgres runtime settings. May trigger a restart.', token: tok, retryWith: `?confirm=${tok}` }, 409);
+          return json(res, { confirmRequired: true, warning: 'Updates Postgres runtime settings. May trigger a restart.', token: tok, retryWith: `?confirm=${tok}` }, soft409);
         }
         const payload = consumeConfirmToken(confirm, 'pgconfig:update');
         if (!payload || payload.projectRef !== active.projectRef) return json(res, { error: 'Invalid or expired confirmation token' }, 403);
@@ -2445,7 +2548,7 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
         const confirm = url.searchParams.get('confirm');
         if (!confirm) {
           const tok = issueConfirmToken('backup:undo', { projectRef: active.projectRef });
-          return json(res, { confirmRequired: true, warning: 'Rolls the database back to a named restore point. Irreversible via this endpoint.', token: tok, retryWith: `?confirm=${tok}` }, 409);
+          return json(res, { confirmRequired: true, warning: 'Rolls the database back to a named restore point. Irreversible via this endpoint.', token: tok, retryWith: `?confirm=${tok}` }, soft409);
         }
         const payload = consumeConfirmToken(confirm, 'backup:undo');
         if (!payload || payload.projectRef !== active.projectRef) return json(res, { error: 'Invalid or expired confirmation token' }, 403);
@@ -2490,7 +2593,7 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
         const confirm = url.searchParams.get('confirm');
         if (!confirm) {
           const tok = issueConfirmToken('migrations:rollback', { projectRef: active.projectRef });
-          return json(res, { confirmRequired: true, warning: 'Rolls back migrations. May alter schema irreversibly.', token: tok, retryWith: `?confirm=${tok}` }, 409);
+          return json(res, { confirmRequired: true, warning: 'Rolls back migrations. May alter schema irreversibly.', token: tok, retryWith: `?confirm=${tok}` }, soft409);
         }
         const payload = consumeConfirmToken(confirm, 'migrations:rollback');
         if (!payload || payload.projectRef !== active.projectRef) return json(res, { error: 'Invalid or expired confirmation token' }, 403);
@@ -2709,6 +2812,7 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
           order by total_exec_time desc
           limit ${Math.min(Math.max(limit, 1), 500)}
         `, { readOnly: true });
+        if (r.status >= 400 && /pg_stat_statements/.test(JSON.stringify(r.data || ''))) return json(res, { unavailable: true, rows: [], note: 'pg_stat_statements is not enabled on this database.' });
         return json(res, r.data, r.status);
       }
 
@@ -3069,6 +3173,110 @@ module.exports = function ({ addPrefixRoute, json, readBody }) {
       // =====================================================================
       // USAGE (daily counts aggregated from logs)
       // =====================================================================
+
+      // =====================================================================
+      // 3.0 SURFACE: the project at a glance, one table in full, insights
+      // =====================================================================
+
+      if (subpath === '/overview' && method === 'GET') {
+        const cfg = readCfg();
+        const active = getActiveProject(cfg);
+        if (!cfg.managementToken) return json(res, { error: 'Management token not configured' }, 401);
+        if (!active) return json(res, { error: 'No active project' }, 400);
+        const refresh = url.searchParams.get('refresh') === '1';
+        const cached = overviewCache.get(active.projectRef);
+        if (!refresh && cached && Date.now() - cached.ts < 60000) return json(res, cached.data);
+        const out = { name: active.name, projectRef: active.projectRef, url: active.url, repoPath: active.repoPath || '', dashboardUrl: `https://supabase.com/dashboard/project/${active.projectRef}`, keys: { serviceRole: !!active.serviceRoleKey, anon: !!active.anonKey }, services: [], project: null, database: null, auth: null, storage: null, counts: null, tables: [], buckets: [], functions: [], advisors: { errors: 0, warnings: 0, info: 0, security: 0, performance: 0 }, disk: null, backups: null, migrations: 0, recentUsers: [], issues: [] };
+        const mgmt = (p) => httpsReq(`https://${MANAGEMENT_HOST}/v1/projects/${active.projectRef}${p}`, { headers: managementHeaders(cfg) }).then((r) => (r.status < 400 ? r.data : null)).catch(() => null);
+        const [health, project, stats, tables, buckets, fns, sec, perf, disk, backups, migrations, recent] = await Promise.all([
+          mgmt('/health?services=db,auth,rest,realtime,storage'),
+          httpsReq(`https://${MANAGEMENT_HOST}/v1/projects/${active.projectRef}`, { headers: managementHeaders(cfg) }).then((r) => (r.status < 400 ? r.data : null)).catch(() => null),
+          runSql(cfg, active.projectRef, `
+            select jsonb_build_object(
+              'database', (select row_to_json(d) from (select pg_database_size(current_database()) as size_bytes, (select count(*) from pg_stat_activity) as connections, (select setting::int from pg_settings where name='max_connections') as max_connections, version() as pg_version, (select pg_postmaster_start_time()) as started_at) d),
+              'auth', (select row_to_json(a) from (select count(*) as total_users, count(*) filter (where email_confirmed_at is not null) as confirmed, count(*) filter (where is_anonymous) as anonymous, count(*) filter (where banned_until > now()) as banned, count(*) filter (where created_at > now() - interval '7 days') as signups_7d, count(*) filter (where last_sign_in_at > now() - interval '7 days') as active_7d, count(*) filter (where created_at > now() - interval '24 hours') as signups_24h, count(*) filter (where last_sign_in_at > now() - interval '24 hours') as active_24h from auth.users) a),
+              'storage', (select row_to_json(s) from (select (select count(*) from storage.buckets) as buckets, (select count(*) from storage.objects) as objects, (select coalesce(sum((metadata->>'size')::bigint), 0) from storage.objects) as bytes) s),
+              'counts', (select row_to_json(c) from (select (select count(*) from information_schema.tables where table_schema = 'public' and table_type = 'BASE TABLE') as public_tables, (select count(*) from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relkind in ('r','p') and not c.relrowsecurity) as tables_without_rls, (select count(*) from pg_policies where schemaname = 'public') as public_policies, (select count(*) from pg_matviews where schemaname = 'public') as public_matviews, (select count(*) from information_schema.routines where routine_schema = 'public') as public_functions, (select count(*) from pg_trigger where not tgisinternal) as triggers, (select count(*) from pg_extension) as extensions, (select count(*) from pg_catalog.pg_namespace where nspname not like 'pg_%' and nspname not in ('information_schema','pg_toast','extensions','graphql','graphql_public','pgsodium','pgsodium_masks','realtime','supabase_functions','vault','net','cron','pgbouncer','auth','storage','supabase_migrations')) as user_schemas) c)
+            ) as overview`, { readOnly: true }).then((r) => (r.status < 400 && r.data && r.data[0] ? r.data[0].overview : null)).catch(() => null),
+          runSql(cfg, active.projectRef, `select c.relname as name, n.nspname as schema, pg_total_relation_size(c.oid) as size_bytes, c.reltuples::bigint as approx_rows, c.relrowsecurity as rls_enabled, (select count(*) from pg_policies p where p.schemaname = n.nspname and p.tablename = c.relname) as policies, exists(select 1 from pg_index i where i.indrelid = c.oid and i.indisprimary) as has_pk from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind in ('r','p') and n.nspname = 'public' order by pg_total_relation_size(c.oid) desc`, { readOnly: true }).then((r) => (r.status < 400 && Array.isArray(r.data) ? r.data : [])).catch(() => []),
+          isProjectConfigured(active) ? httpsReq(projectRestUrl(active, '/storage/v1/bucket'), { headers: projectHeaders(active) }).then((r) => (r.status < 400 && Array.isArray(r.data) ? r.data : [])).catch(() => []) : Promise.resolve([]),
+          mgmt('/functions'),
+          mgmt('/advisors/security'),
+          mgmt('/advisors/performance'),
+          mgmt('/config/disk/util'),
+          mgmt('/database/backups'),
+          mgmt('/database/migrations'),
+          runSql(cfg, active.projectRef, `select id, email, created_at, last_sign_in_at, raw_app_meta_data->>'provider' as provider, email_confirmed_at is not null as confirmed, banned_until > now() as banned from auth.users order by created_at desc limit 8`, { readOnly: true }).then((r) => (r.status < 400 && Array.isArray(r.data) ? r.data : [])).catch(() => []),
+        ]);
+        out.services = Array.isArray(health) ? health.map((s) => ({ name: s.name, healthy: !!s.healthy, status: s.status, version: s.info && s.info.version })) : [];
+        if (project) out.project = { status: project.status, region: project.region, createdAt: project.created_at, organizationId: project.organization_id, postgresVersion: project.database && project.database.version, engine: project.database && project.database.postgres_engine };
+        if (stats) { out.database = stats.database; out.auth = stats.auth; out.storage = stats.storage; out.counts = stats.counts; }
+        out.tables = tables;
+        out.buckets = buckets.map((b) => ({ id: b.id, name: b.name, public: !!b.public, fileSizeLimit: b.file_size_limit, allowed: b.allowed_mime_types || null, createdAt: b.created_at }));
+        out.functions = Array.isArray(fns) ? fns.map((f) => ({ id: f.id, slug: f.slug, name: f.name, status: f.status, version: f.version, verifyJwt: f.verify_jwt, updatedAt: f.updated_at })) : [];
+        for (const [kind, data] of [['security', sec], ['performance', perf]]) { for (const l of ((data && data.lints) || [])) { out.advisors[kind]++; if (l.level === 'ERROR') out.advisors.errors++; else if (l.level === 'WARN') out.advisors.warnings++; else out.advisors.info++; } }
+        if (disk && disk.metrics) out.disk = { sizeBytes: disk.metrics.fs_size_bytes, usedBytes: disk.metrics.fs_used_bytes, availBytes: disk.metrics.fs_avail_bytes, at: disk.timestamp };
+        if (backups) out.backups = { pitr: !!backups.pitr_enabled, walg: !!backups.walg_enabled, region: backups.region, count: Array.isArray(backups.backups) ? backups.backups.length : 0, latest: Array.isArray(backups.backups) && backups.backups.length ? backups.backups[backups.backups.length - 1] : null };
+        out.migrations = Array.isArray(migrations) ? migrations.length : 0;
+        out.recentUsers = recent;
+        const down = out.services.filter((s) => !s.healthy);
+        if (down.length) out.issues.push({ level: 'error', issue: 'service', message: `${down.map((s) => s.name).join(', ')} ${down.length === 1 ? 'is' : 'are'} not healthy.` });
+        if (out.advisors.errors) out.issues.push({ level: 'error', issue: 'advisor', message: `${out.advisors.errors} advisor error${out.advisors.errors === 1 ? '' : 's'} (security or performance).` });
+        if (out.counts && out.counts.tables_without_rls) out.issues.push({ level: 'warn', issue: 'rls', message: `${out.counts.tables_without_rls} public table${out.counts.tables_without_rls === 1 ? '' : 's'} without row level security.` });
+        if (out.advisors.warnings) out.issues.push({ level: 'warn', issue: 'advisor', message: `${out.advisors.warnings} advisor warning${out.advisors.warnings === 1 ? '' : 's'}.` });
+        if (out.disk && out.disk.sizeBytes && out.disk.usedBytes / out.disk.sizeBytes > 0.8) out.issues.push({ level: 'warn', issue: 'disk', message: `Disk is ${Math.round(out.disk.usedBytes / out.disk.sizeBytes * 100)}% full.` });
+        if (out.database && out.database.max_connections && out.database.connections / out.database.max_connections > 0.8) out.issues.push({ level: 'warn', issue: 'connections', message: `${out.database.connections} of ${out.database.max_connections} connections in use.` });
+        if (out.backups && !out.backups.pitr) out.issues.push({ level: 'info', issue: 'backups', message: 'Point-in-time recovery is off; only daily backups apply.' });
+        if (!active.serviceRoleKey) out.issues.push({ level: 'warn', issue: 'keys', message: 'No service role key on this project: rows, auth, storage and functions cannot be reached.' });
+        overviewCache.set(active.projectRef, { ts: Date.now(), data: out });
+        return json(res, out);
+      }
+
+      if (subpath === '/table' && method === 'GET') {
+        const cfg = readCfg();
+        const active = getActiveProject(cfg);
+        if (!cfg.managementToken || !active) return json(res, { error: 'Not configured' }, 401);
+        const schema = url.searchParams.get('schema') || 'public';
+        const table = url.searchParams.get('name');
+        if (!table) return json(res, { error: 'name required' }, 400);
+        const r = await runSql(cfg, active.projectRef, `
+          select jsonb_build_object(
+            'table', (select row_to_json(t) from (select c.relname as name, n.nspname as schema, case c.relkind when 'r' then 'table' when 'v' then 'view' when 'm' then 'materialized_view' when 'p' then 'partitioned_table' when 'f' then 'foreign_table' end as kind, obj_description(c.oid) as comment, pg_total_relation_size(c.oid) as size_bytes, pg_relation_size(c.oid) as table_bytes, pg_indexes_size(c.oid) as index_bytes, c.reltuples::bigint as approx_rows, c.relrowsecurity as rls_enabled, c.relforcerowsecurity as rls_forced from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = ${q(schema)} and c.relname = ${q(table)}) t),
+            'columns', (select coalesce(json_agg(row_to_json(col) order by col.ordinal), '[]'::json) from (select a.attnum as ordinal, a.attname as name, format_type(a.atttypid, a.atttypmod) as type, a.attnotnull as not_null, pg_get_expr(ad.adbin, ad.adrelid) as default_value, coalesce(i.indisprimary, false) as is_primary_key, col_description(a.attrelid, a.attnum) as comment, a.attidentity <> '' as identity, a.attgenerated <> '' as generated, (select json_build_object('schema', fn.nspname, 'table', fc.relname, 'column', fa.attname) from pg_constraint con join pg_class fc on fc.oid = con.confrelid join pg_namespace fn on fn.oid = fc.relnamespace join pg_attribute fa on fa.attrelid = con.confrelid and fa.attnum = con.confkey[1] where con.conrelid = a.attrelid and con.contype = 'f' and a.attnum = con.conkey[1] limit 1) as references from pg_attribute a join pg_class c on c.oid = a.attrelid join pg_namespace n on n.oid = c.relnamespace left join pg_attrdef ad on ad.adrelid = a.attrelid and ad.adnum = a.attnum left join pg_index i on i.indrelid = a.attrelid and a.attnum = any(i.indkey) and i.indisprimary where n.nspname = ${q(schema)} and c.relname = ${q(table)} and a.attnum > 0 and not a.attisdropped) col),
+            'indexes', (select coalesce(json_agg(row_to_json(ix)), '[]'::json) from (select i.indexname as name, i.indexdef as definition, coalesce(s.idx_scan, 0) as scans, pg_relation_size((quote_ident(i.schemaname) || '.' || quote_ident(i.indexname))::regclass) as bytes from pg_indexes i left join pg_stat_user_indexes s on s.schemaname = i.schemaname and s.indexrelname = i.indexname where i.schemaname = ${q(schema)} and i.tablename = ${q(table)}) ix),
+            'policies', (select coalesce(json_agg(row_to_json(p)), '[]'::json) from (select policyname as name, permissive, roles, cmd as command, qual as using_expression, with_check as check_expression from pg_policies where schemaname = ${q(schema)} and tablename = ${q(table)} order by policyname) p),
+            'triggers', (select coalesce(json_agg(row_to_json(tg)), '[]'::json) from (select t.tgname as name, pg_get_triggerdef(t.oid) as definition, t.tgenabled <> 'D' as enabled from pg_trigger t join pg_class c on c.oid = t.tgrelid join pg_namespace n on n.oid = c.relnamespace where not t.tgisinternal and n.nspname = ${q(schema)} and c.relname = ${q(table)}) tg),
+            'constraints', (select coalesce(json_agg(row_to_json(cn)), '[]'::json) from (select con.conname as name, con.contype as type, pg_get_constraintdef(con.oid) as definition from pg_constraint con join pg_class c on c.oid = con.conrelid join pg_namespace n on n.oid = c.relnamespace where n.nspname = ${q(schema)} and c.relname = ${q(table)}) cn),
+            'referenced_by', (select coalesce(json_agg(row_to_json(rb)), '[]'::json) from (select n2.nspname as schema, c2.relname as table, con.conname as constraint from pg_constraint con join pg_class c2 on c2.oid = con.conrelid join pg_namespace n2 on n2.oid = c2.relnamespace join pg_class c on c.oid = con.confrelid join pg_namespace n on n.oid = c.relnamespace where con.contype = 'f' and n.nspname = ${q(schema)} and c.relname = ${q(table)}) rb),
+            'stats', (select row_to_json(st) from (select n_live_tup as live_rows, n_dead_tup as dead_rows, seq_scan, idx_scan, n_tup_ins as inserts, n_tup_upd as updates, n_tup_del as deletes, last_autovacuum, last_autoanalyze from pg_stat_user_tables where schemaname = ${q(schema)} and relname = ${q(table)}) st)
+          ) as detail`, { readOnly: true });
+        if (r.status >= 400) return json(res, { error: (r.data && r.data.message) || 'Query failed' }, r.status);
+        const d = r.data && r.data[0] ? r.data[0].detail : null;
+        if (!d || !d.table) return json(res, { error: 'Table not found' }, 404);
+        return json(res, { ...d, dashboardUrl: `https://supabase.com/dashboard/project/${active.projectRef}/editor` });
+      }
+
+      if (subpath === '/insights' && method === 'GET') {
+        const cfg = readCfg();
+        const active = getActiveProject(cfg);
+        if (!cfg.managementToken || !active) return json(res, { error: 'Not configured' }, 401);
+        const mgmt = (p) => httpsReq(`https://${MANAGEMENT_HOST}/v1/projects/${active.projectRef}${p}`, { headers: managementHeaders(cfg) }).then((r) => (r.status < 400 ? r.data : null)).catch(() => null);
+        const sql = (s) => runSql(cfg, active.projectRef, s, { readOnly: true }).then((r) => (r.status < 400 && Array.isArray(r.data) ? r.data : [])).catch(() => []);
+        const [sec, perf, noRls, noPk, unused, cache, bloat, longRunning, slow] = await Promise.all([
+          mgmt('/advisors/security'), mgmt('/advisors/performance'),
+          sql(`select n.nspname as schema, c.relname as name, c.reltuples::bigint as approx_rows from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind in ('r','p') and n.nspname = 'public' and not c.relrowsecurity order by c.relname`),
+          sql(`select n.nspname as schema, c.relname as name from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind in ('r','p') and n.nspname = 'public' and not exists (select 1 from pg_index i where i.indrelid = c.oid and i.indisprimary) order by c.relname`),
+          sql(`select s.schemaname as schema, s.relname as table, s.indexrelname as index, pg_relation_size(s.indexrelid) as bytes from pg_stat_user_indexes s join pg_index i on i.indexrelid = s.indexrelid where s.idx_scan = 0 and not i.indisprimary and not i.indisunique and s.schemaname = 'public' order by pg_relation_size(s.indexrelid) desc`),
+          sql(`select 'heap' as kind, sum(heap_blks_read) as blocks_read, sum(heap_blks_hit) as blocks_hit, case when sum(heap_blks_hit) + sum(heap_blks_read) = 0 then null else sum(heap_blks_hit)::float / (sum(heap_blks_hit) + sum(heap_blks_read)) end as hit_ratio from pg_statio_user_tables union all select 'index', sum(idx_blks_read), sum(idx_blks_hit), case when sum(idx_blks_hit) + sum(idx_blks_read) = 0 then null else sum(idx_blks_hit)::float / (sum(idx_blks_hit) + sum(idx_blks_read)) end from pg_statio_user_indexes`),
+          sql(`select schemaname as schema, relname as name, n_live_tup as live_rows, n_dead_tup as dead_rows, last_autovacuum from pg_stat_user_tables where n_dead_tup > 1000 and n_dead_tup > n_live_tup * 0.2 order by n_dead_tup desc limit 20`),
+          sql(`select pid, now() - query_start as duration, state, left(query, 200) as query from pg_stat_activity where state <> 'idle' and query_start < now() - interval '5 minutes' and pid <> pg_backend_pid() order by query_start`),
+          runSql(cfg, active.projectRef, `select left(query, 300) as query, calls, round(total_exec_time::numeric, 1) as total_ms, round(mean_exec_time::numeric, 2) as mean_ms, rows from pg_stat_statements where query not like '%pg_stat_statements%' order by total_exec_time desc limit 15`, { readOnly: true }).then((r) => (r.status < 400 && Array.isArray(r.data) ? { rows: r.data } : { unavailable: true })).catch(() => ({ unavailable: true })),
+        ]);
+        const lints = [];
+        for (const [kind, data] of [['security', sec], ['performance', perf]]) for (const l of ((data && data.lints) || [])) lints.push({ kind, name: l.name, title: l.title, level: l.level, detail: String(l.detail || '').replace(/\\`/g, '`'), description: l.description, remediation: l.remediation, schema: l.metadata && l.metadata.schema, object: l.metadata && l.metadata.name, type: l.metadata && l.metadata.type, key: l.cache_key });
+        const counts = { lints: lints.length, errors: lints.filter((l) => l.level === 'ERROR').length, warnings: lints.filter((l) => l.level === 'WARN').length, info: lints.filter((l) => l.level === 'INFO').length, security: lints.filter((l) => l.kind === 'security').length, performance: lints.filter((l) => l.kind === 'performance').length, tablesWithoutRls: noRls.length, tablesWithoutPk: noPk.length, unusedIndexes: unused.length, unusedIndexBytes: unused.reduce((n, i) => n + Number(i.bytes || 0), 0), bloated: bloat.length, longRunning: longRunning.length };
+        return json(res, { counts, lints, tablesWithoutRls: noRls, tablesWithoutPk: noPk, unusedIndexes: unused, cacheHit: cache, bloated: bloat, longRunning, slowQueries: slow });
+      }
 
       if (subpath === '/usage/daily' && method === 'GET') {
         const cfg = readCfg();

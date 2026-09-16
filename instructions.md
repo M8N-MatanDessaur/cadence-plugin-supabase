@@ -1,542 +1,144 @@
-## Supabase Plugin -- AI Instructions
-
-You have access to a dashboard-class Supabase control plane via the Symphonee API. Every action the Supabase dashboard or CLI performs is reachable here as a REST route AND as a dashboard UI action. The user should never have to leave Symphonee to manage Supabase.
-
-**All routes are at** `http://127.0.0.1:3800/api/plugins/supabase/`
-
-### IMPORTANT: Start every session by fetching context
-
-```bash
-curl -s http://127.0.0.1:3800/api/plugins/supabase/config
-curl -s http://127.0.0.1:3800/api/plugins/supabase/health
-curl -s http://127.0.0.1:3800/api/plugins/supabase/stats/overview   # rich snapshot
-```
-
-Covers: whether a Management Personal Access Token (PAT) is set, the active project, Postgres version + schema counts, users, storage, extensions, triggers.
-
-If no PAT or no active project: tell the user to configure the plugin (Settings -> Supabase) before proceeding.
-
-### Multi-project
-
-One global Management PAT (`sbp_...`) is stored at the plugin level and covers every project the user's Supabase account has access to. Each Symphonee-side project config carries: `name`, `projectRef`, `serviceRoleKey`, `anonKey`, `url`, and optionally `repoPath`.
-
-```bash
-curl -s http://127.0.0.1:3800/api/plugins/supabase/projects                   # Symphonee-registered
-curl -s http://127.0.0.1:3800/api/plugins/supabase/mgmt/projects              # all projects on the account
-curl -s -X POST http://127.0.0.1:3800/api/plugins/supabase/projects/active \
-  -H "Content-Type: application/json" -d '{"name":"My Project"}'
-```
-
-`POST /projects` (Symphonee-local) adds a project to the sidebar list. `POST /mgmt/projects` (below) actually creates a Supabase cloud project.
-
-### Pre-made scripts
-
-From **bash**:
-```bash
-powershell.exe -ExecutionPolicy Bypass -NoProfile -File "./dashboard/plugins/supabase/scripts/ScriptName.ps1"
-powershell.exe -ExecutionPolicy Bypass -NoProfile -Command "./dashboard/plugins/supabase/scripts/ScriptName.ps1 -Param 'value'"
-```
-
-| Script | Purpose |
-|--------|---------|
-| `Get-Projects.ps1` | List Symphonee-registered projects |
-| `Add-Project.ps1` | Register an existing Supabase project with Symphonee |
-| `Switch-Project.ps1` | Switch the active project |
-| `Remove-Project.ps1` | Unregister a project from Symphonee |
-| `New-CloudProject.ps1 -Name -OrganizationId -DbPass -Region [-Plan] [-Confirm]` | **Create a new Supabase cloud project** |
-| `Get-Regions.ps1` | Available regions for project creation |
-| `New-Organization.ps1 -Name` | **Create a new Supabase organization** |
-| `Get-Organizations.ps1 [-Slug] [-Members] [-Projects] [-Entitlements]` | List organizations / drill into one |
-| `Get-ProjectHealth.ps1 [-Services 'db,auth,...']` | Per-service health status |
-| `Restart-Services.ps1 [-Services] [-Confirm]` | Restart project services |
-| `Get-Overview.ps1` | Rich overview (DB size, users, storage, schema counts) |
-| `Get-DbStats.ps1 -Kind <overview\|tables\|indexes\|unused-indexes\|slow-queries\|long-running\|blocking\|locks\|cache-hit\|vacuum\|replication-slots\|roles\|bucket-sizes>` | **Deep database statistics** |
-| `Get-UserStats.ps1 -Kind <summary\|growth\|providers\|mfa\|sessions>` | **Deep auth statistics** |
-| `Get-UserDetail.ps1 -UserId` | **Per-user deep info** (user, identities, sessions, MFA, audit count) |
-| `Get-Usage.ps1 [-Days 7]` | Daily user/session counts |
-| `Get-Addons.ps1` | List billing addons (compute, disk, PITR, custom-domain) |
-| `Set-Addon.ps1 -AddonType -AddonVariant [-Confirm]` | Apply/resize compute or other addons |
-| `Get-Disk.ps1 [-Util] [-Autoscale]` | Disk config / utilization / autoscale |
-| `Get-FunctionBody.ps1 -Slug [-OutFile]` | **Download source of a deployed edge function** |
-| `Get-RealtimeChannels.ps1` | Active realtime channels |
-| `Get-Health.ps1` | Quick health check (Postgres version, counts) |
-| `Get-Summary.ps1` | Simple counts |
-| `Invoke-Sql.ps1 -Query [-ReadOnly] [-Force]` | Run SQL (destructive queries prompt) |
-| `Get-Tables.ps1 [-Schema]` / `Get-Columns.ps1 -Table` / `Get-Policies.ps1` / `Enable-Rls.ps1` / `New-Policy.ps1` | Schema inspection + RLS |
-| `Get-AuthUsers.ps1 [-Page] [-PerPage]` / `New-AuthUser.ps1 -Email -Password` / `Send-MagicLink.ps1 -Email` | Auth admin |
-| `Get-Buckets.ps1` / `Get-Objects.ps1 -Bucket` / `New-SignedUrl.ps1 -Bucket -Path [-ExpiresIn]` | Storage |
-| `Get-EdgeFunctions.ps1` / `Invoke-EdgeFunction.ps1 -Slug -Body '{}'` | Edge functions |
-| `Get-Secrets.ps1` / `Set-Secret.ps1 -Name -Value` | Runtime secrets |
-| `Get-Advisors.ps1 [-Kind security\|performance]` | Security + performance advisors |
-| `Get-Logs.ps1 -Sql` | Query logs via BigQuery-style SQL |
-| `Get-Types.ps1 [-Schemas] [-OutFile]` | Generate TypeScript types |
-| `Get-Backups.ps1` | PITR backup windows |
-| `New-Migration.ps1 -Name -JsonFile` | Apply a migration |
-
-### The SQL runner
-
-`POST /api/plugins/supabase/sql` proxies `POST https://api.supabase.com/v1/projects/{ref}/database/query`.
-
-```bash
-curl -s -X POST http://127.0.0.1:3800/api/plugins/supabase/sql \
-  -H "Content-Type: application/json" \
-  -d '{"query":"select * from profiles limit 10"}'
-
-curl -s -X POST http://127.0.0.1:3800/api/plugins/supabase/sql/select \
-  -H "Content-Type: application/json" \
-  -d '{"query":"select count(*) from profiles"}'
-```
-
-**Destructive-SQL safety gate.** If your SQL contains `DROP`, `TRUNCATE`, `DELETE` without `WHERE`, or `ALTER ... DROP`, the first call returns 409 with a `confirmRequired` token. Retry within 10 minutes with `?confirm=<token>` on the URL, or set `body.force: true` to skip the gate. Tell the user *what* is about to be destroyed before retrying.
-
----
-
-### Organizations (full surface)
-
-```bash
-# List
-curl -s http://127.0.0.1:3800/api/plugins/supabase/mgmt/organizations
-
-# Create (triggers org setup flow -- free plan by default)
-curl -s -X POST http://127.0.0.1:3800/api/plugins/supabase/mgmt/organizations \
-  -H "Content-Type: application/json" -d '{"name":"My Company"}'
+# Supabase plugin (Cadence 3.0)
 
-# Drill down by slug
-curl -s http://127.0.0.1:3800/api/plugins/supabase/mgmt/organizations/<slug>
-curl -s http://127.0.0.1:3800/api/plugins/supabase/mgmt/organizations/<slug>/members
-curl -s http://127.0.0.1:3800/api/plugins/supabase/mgmt/organizations/<slug>/projects
-curl -s http://127.0.0.1:3800/api/plugins/supabase/mgmt/organizations/<slug>/entitlements   # plan limits/quotas
-
-# Project claim (transfer existing project into this org)
-curl -s http://127.0.0.1:3800/api/plugins/supabase/mgmt/organizations/<slug>/project-claim/<token>
-curl -s -X POST http://127.0.0.1:3800/api/plugins/supabase/mgmt/organizations/<slug>/project-claim/<token>
-```
-
-**Member invite/remove and invoices/billing dollars are NOT on the public Management API.** Don't try to add them -- Supabase dashboard uses a private platform API. Use `entitlements` for quota info.
-
----
-
-### Projects -- create, update, restart
-
-```bash
-# List available regions first
-curl -s http://127.0.0.1:3800/api/plugins/supabase/mgmt/regions
-
-# Create a cloud project (gated)
-curl -s -X POST http://127.0.0.1:3800/api/plugins/supabase/mgmt/projects \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name":"my-new-project",
-    "organization_id":"<org id from /mgmt/organizations>",
-    "db_pass":"<strong password>",
-    "region":"us-east-1",
-    "plan":"free",
-    "desired_instance_size":"micro"
-  }'
-# -> 409 with token -> retry with ?confirm=<token>
-
-# Update project metadata (name, etc.)
-curl -s -X PATCH http://127.0.0.1:3800/api/plugins/supabase/mgmt/project \
-  -H "Content-Type: application/json" -d '{"name":"new-name"}'
-
-# Service health
-curl -s "http://127.0.0.1:3800/api/plugins/supabase/mgmt/project/health?services=db,auth,rest,realtime,storage,functions"
-
-# Read-only mode
-curl -s http://127.0.0.1:3800/api/plugins/supabase/mgmt/project/readonly
-curl -s -X POST http://127.0.0.1:3800/api/plugins/supabase/mgmt/project/readonly/disable
-
-# Restart services (gated)
-curl -s -X POST http://127.0.0.1:3800/api/plugins/supabase/mgmt/project/restart-services \
-  -H "Content-Type: application/json" -d '{"services":["auth","rest"]}'
-
-# Pause / Restore / Delete (all gated, already covered elsewhere)
-```
-
-After creating a project, Supabase provisions it asynchronously. Wait for `status == "ACTIVE_HEALTHY"` via `/mgmt/project/health`, then the user still has to add it to Symphonee (via `POST /projects`) with the service-role key from `/mgmt/api-keys`.
-
----
-
-### Billing / Addons
-
-Compute size, disk size/iops/throughput, PITR, custom domain, all live as "addons".
-
-```bash
-# List current and available addons
-curl -s http://127.0.0.1:3800/api/plugins/supabase/mgmt/addons
-
-# Apply or resize (gated, changes monthly cost)
-curl -s -X PATCH http://127.0.0.1:3800/api/plugins/supabase/mgmt/addons \
-  -H "Content-Type: application/json" \
-  -d '{"addon_type":"compute_instance","addon_variant":"ci_medium"}'
-
-# Remove an addon
-curl -s -X DELETE http://127.0.0.1:3800/api/plugins/supabase/mgmt/addons/<addon_variant>
-```
-
----
-
-### Disk config
-
-```bash
-curl -s http://127.0.0.1:3800/api/plugins/supabase/mgmt/disk
-curl -s http://127.0.0.1:3800/api/plugins/supabase/mgmt/disk/util      # current usage %
-curl -s http://127.0.0.1:3800/api/plugins/supabase/mgmt/disk/autoscale
-# Modify (gated)
-curl -s -X POST http://127.0.0.1:3800/api/plugins/supabase/mgmt/disk \
-  -H "Content-Type: application/json" -d '{"provisioned_iops":3000,"size_gb":16}'
-```
-
----
-
-### Postgres runtime settings
-
-```bash
-curl -s http://127.0.0.1:3800/api/plugins/supabase/mgmt/postgres-config
-# Update (gated, may restart the database)
-curl -s -X PUT http://127.0.0.1:3800/api/plugins/supabase/mgmt/postgres-config \
-  -H "Content-Type: application/json" \
-  -d '{"max_connections":100,"shared_buffers":"256MB"}'
-```
-
-Safe to tune with a small compute instance: `work_mem`, `maintenance_work_mem`, `effective_cache_size`, `statement_timeout`. NEVER touch `wal_level` or `archive_*` without talking to the user.
-
----
-
-### DEEP STATS (what the dashboard "Database Reports" page runs)
-
-These routes run read-only SQL against `pg_catalog`, `pg_stat_*`, `auth.*`, and `storage.*`. They don't consume Management-API rate limit.
-
-```bash
-# DB: size, connections, version, start time
-curl -s http://127.0.0.1:3800/api/plugins/supabase/stats/db
-
-# Per-table stats: live/dead rows, table+index size, vacuum state, seq/idx scans
-curl -s "http://127.0.0.1:3800/api/plugins/supabase/stats/tables?schema=public"
-
-# Indexes: usage counters + size
-curl -s http://127.0.0.1:3800/api/plugins/supabase/stats/indexes
-
-# Unused indexes (safe to drop candidates)
-curl -s http://127.0.0.1:3800/api/plugins/supabase/stats/unused-indexes
-
-# Slow queries (needs pg_stat_statements extension; create with POST /extensions if missing)
-curl -s "http://127.0.0.1:3800/api/plugins/supabase/stats/slow-queries?limit=50"
-
-# Long-running queries (>= 5 min by default)
-curl -s "http://127.0.0.1:3800/api/plugins/supabase/stats/long-running?minMinutes=5"
-
-# Blocking / blocked PIDs
-curl -s http://127.0.0.1:3800/api/plugins/supabase/stats/blocking
-
-# Current locks
-curl -s http://127.0.0.1:3800/api/plugins/supabase/stats/locks
-
-# Cache hit ratio (aim > 0.99)
-curl -s http://127.0.0.1:3800/api/plugins/supabase/stats/cache-hit
-
-# Vacuum / autovacuum status + dead-tuple % per table
-curl -s http://127.0.0.1:3800/api/plugins/supabase/stats/vacuum
-
-# Logical replication slots + WAL lag in bytes
-curl -s http://127.0.0.1:3800/api/plugins/supabase/stats/replication-slots
-
-# Active connections per role
-curl -s http://127.0.0.1:3800/api/plugins/supabase/stats/roles
-
-# Storage buckets: object count + total bytes per bucket
-curl -s http://127.0.0.1:3800/api/plugins/supabase/stats/bucket-sizes
-```
-
-**Overview (one shot):**
-```bash
-curl -s http://127.0.0.1:3800/api/plugins/supabase/stats/overview
-# -> { overview: { database, auth, storage, schema_counts } }
-```
-
----
-
-### DEEP AUTH STATS
-
-```bash
-# Summary: total/confirmed/banned/anon users, signups 24h/7d/30d, active 24h/7d/30d
-curl -s http://127.0.0.1:3800/api/plugins/supabase/stats/auth/summary
-
-# Daily growth (signups + sign-ins per day for last N days)
-curl -s "http://127.0.0.1:3800/api/plugins/supabase/stats/auth/growth?days=30"
-
-# Which auth providers are in use (Google, GitHub, email, etc.)
-curl -s http://127.0.0.1:3800/api/plugins/supabase/stats/auth/providers
-
-# MFA factor counts by type + status
-curl -s http://127.0.0.1:3800/api/plugins/supabase/stats/auth/mfa
-
-# Session counts
-curl -s http://127.0.0.1:3800/api/plugins/supabase/stats/auth/sessions
-
-# Per-user deep detail: user row + identities + sessions + mfa factors + audit count
-curl -s http://127.0.0.1:3800/api/plugins/supabase/auth/users/<user-id>/detail
-
-# Daily usage summary
-curl -s "http://127.0.0.1:3800/api/plugins/supabase/usage/daily?days=7"
-```
-
-Use these BEFORE recommending changes. Example: if the user says "I think my users aren't signing in", pull `stats/auth/summary` + `stats/auth/growth` and show them the actual numbers.
-
----
-
-### Database context / backups / restore points
-
-```bash
-# Dashboard "database context" (size, version, connection counts)
-curl -s http://127.0.0.1:3800/api/plugins/supabase/database/context
-
-# Backups (PITR window)
-curl -s http://127.0.0.1:3800/api/plugins/supabase/backups
-
-# Named restore points (pre-migration snapshots)
-curl -s http://127.0.0.1:3800/api/plugins/supabase/backups/restore-points
-curl -s -X POST http://127.0.0.1:3800/api/plugins/supabase/backups/restore-points \
-  -H "Content-Type: application/json" -d '{"name":"before_refactor"}'
-
-# PITR restore (gated)
-curl -s -X POST http://127.0.0.1:3800/api/plugins/supabase/backups/restore \
-  -H "Content-Type: application/json" -d '{"recovery_time_target_unix":1700000000}'
-
-# Roll back to a named restore point (gated)
-curl -s -X POST http://127.0.0.1:3800/api/plugins/supabase/backups/undo \
-  -H "Content-Type: application/json" -d '{"restore_point":"before_refactor"}'
-```
-
-**Always create a restore point before big destructive migrations.**
-
----
-
-### Migrations (full CRUD)
-
-```bash
-# List
-curl -s http://127.0.0.1:3800/api/plugins/supabase/migrations
-
-# Get one
-curl -s http://127.0.0.1:3800/api/plugins/supabase/migrations/<version>
-
-# Apply
-curl -s -X POST http://127.0.0.1:3800/api/plugins/supabase/migrations \
-  -H "Content-Type: application/json" \
-  -d '{"name":"add_profiles","query":"create table public.profiles (...);"}'
-
-# Upsert without applying (repair history)
-curl -s -X PUT http://127.0.0.1:3800/api/plugins/supabase/migrations \
-  -H "Content-Type: application/json" -d '{"name":"add_profiles","query":"..."}'
-
-# Edit one history entry (repair)
-curl -s -X PATCH http://127.0.0.1:3800/api/plugins/supabase/migrations/<version> \
-  -H "Content-Type: application/json" -d '{"status":"applied"}'
-
-# Rollback (gated)
-curl -s -X DELETE http://127.0.0.1:3800/api/plugins/supabase/migrations \
-  -H "Content-Type: application/json" -d '{"to":"0"}'
-```
-
----
-
-### Edge functions -- create, deploy, download, invoke
-
-```bash
-# Create (metadata only, no body)
-curl -s -X POST http://127.0.0.1:3800/api/plugins/supabase/edge/functions \
-  -H "Content-Type: application/json" -d '{"slug":"hello","name":"Hello","verify_jwt":true}'
-
-# Deploy (with source body)
-curl -s -X POST http://127.0.0.1:3800/api/plugins/supabase/edge/deploy \
-  -H "Content-Type: application/json" \
-  -d '{"slug":"hello","body":"Deno.serve(()=>new Response(\"hi\"))","verify_jwt":true}'
-
-# Bulk update / replace
-curl -s -X PUT http://127.0.0.1:3800/api/plugins/supabase/edge/functions \
-  -H "Content-Type: application/json" -d '[{"slug":"hello","verify_jwt":false}]'
-
-# Download source
-curl -s http://127.0.0.1:3800/api/plugins/supabase/edge/functions/hello/body
-
-# Invoke
-curl -s -X POST http://127.0.0.1:3800/api/plugins/supabase/edge/invoke/hello \
-  -H "Content-Type: application/json" -d '{"name":"world"}'
-
-# Update single
-curl -s -X PATCH http://127.0.0.1:3800/api/plugins/supabase/edge/functions/hello \
-  -H "Content-Type: application/json" -d '{"verify_jwt":false}'
-
-# Delete
-curl -s -X DELETE http://127.0.0.1:3800/api/plugins/supabase/edge/functions/hello
-```
-
-Multi-file bundles still need the Supabase CLI (`supabase functions deploy` with an Import Map). A single inline body is fine for most cases.
-
----
-
-### Third-party auth (Firebase / Auth0 / Cognito import)
-
-```bash
-curl -s http://127.0.0.1:3800/api/plugins/supabase/auth/third-party
-curl -s -X POST http://127.0.0.1:3800/api/plugins/supabase/auth/third-party \
-  -H "Content-Type: application/json" \
-  -d '{"type":"firebase","project_id":"my-fb-project"}'
-curl -s -X DELETE http://127.0.0.1:3800/api/plugins/supabase/auth/third-party/<id>
-```
-
----
-
-### Actions (dashboard Activity tab -- CI-style runs)
-
-```bash
-curl -s "http://127.0.0.1:3800/api/plugins/supabase/mgmt/actions?status=running"
-curl -s http://127.0.0.1:3800/api/plugins/supabase/mgmt/actions/<run_id>
-curl -s http://127.0.0.1:3800/api/plugins/supabase/mgmt/actions/<run_id>/logs
-curl -s -X PATCH http://127.0.0.1:3800/api/plugins/supabase/mgmt/actions/<run_id>/status \
-  -H "Content-Type: application/json" -d '{"status":"cancelled"}'
-```
-
-Use this to watch branch merges, deploys, or restores.
-
----
-
-### Realtime channels (live)
-
-```bash
-# Active channels on the project (names + connected count)
-curl -s http://127.0.0.1:3800/api/plugins/supabase/realtime/channels
-
-# Tenant health
-curl -s http://127.0.0.1:3800/api/plugins/supabase/realtime/tenants/health
-
-# Broadcast a message (REST, no websocket needed)
-curl -s -X POST http://127.0.0.1:3800/api/plugins/supabase/realtime/broadcast \
-  -H "Content-Type: application/json" \
-  -d '{"messages":[{"topic":"room-1","event":"msg","payload":{"text":"hello"}}]}'
-```
-
----
-
-### Row CRUD (PostgREST)
-
-```bash
-curl -s "http://127.0.0.1:3800/api/plugins/supabase/rows/profiles?id=eq.1&select=*"
-curl -s -X POST http://127.0.0.1:3800/api/plugins/supabase/rows/profiles \
-  -H "Content-Type: application/json" -d '{"email":"x@y.com"}'
-curl -s -X PATCH "http://127.0.0.1:3800/api/plugins/supabase/rows/profiles?id=eq.1" \
-  -H "Content-Type: application/json" -d '{"name":"New"}'
-curl -s -X DELETE "http://127.0.0.1:3800/api/plugins/supabase/rows/profiles?id=eq.1"
-curl -s -X POST http://127.0.0.1:3800/api/plugins/supabase/rpc/match_documents \
-  -H "Content-Type: application/json" -d '{"embedding":[0.1,...],"match_count":5}'
-```
-
-Schema switch: add `?_schema=<name>` to the URL. Empty-filter DELETE is gated.
-
----
-
-### RLS policies + Auth admin + Storage + Secrets + Webhooks + Backups + Branches + API keys + Signing keys + SSO + Custom hostname + Network + Read replicas + Upgrade
-
-All covered (same as before). Full list at `/api/plugins/supabase/` route table; see the "Pre-made scripts" table above for the script forms.
-
----
-
-### Common workflows
-
-**1. Create a brand-new project from scratch.**
-- `GET /mgmt/organizations` to find the org id (or create one with `POST /mgmt/organizations`).
-- `GET /mgmt/regions` to pick a region.
-- `POST /mgmt/projects` with `{ name, organization_id, db_pass, region, plan }`.
-- Wait (Supabase provisions async); poll `GET /mgmt/project/health`.
-- `GET /mgmt/api-keys` to fetch the service-role + anon keys.
-- `POST /projects` to register the new project with Symphonee.
-
-**2. Audit a project for the user.**
-- `GET /advisors/security` -> flag RLS-disabled public tables, permissive policies, exposed secrets.
-- `GET /advisors/performance` -> surface missing-index suggestions.
-- `GET /stats/unused-indexes` -> extra bloat candidates.
-- `GET /stats/cache-hit` -> warn if hit ratio < 0.99.
-- `GET /stats/vacuum` -> warn if dead_pct > 20 on big tables.
-- Show the user findings in priority order; offer to fix each one.
-
-**3. "My users aren't logging in" investigation.**
-- `GET /stats/auth/summary` -> total, confirmed, banned, signups 24h, active 24h.
-- `GET /stats/auth/growth?days=30` -> daily signups vs sign-ins trend.
-- `GET /stats/auth/providers` -> which providers actually see traffic.
-- If a specific user: `GET /auth/users/<id>/detail` -> identities, sessions, MFA, audit count.
-
-**4. Slow query triage.**
-- First enable pg_stat_statements if missing: `POST /extensions {"name":"pg_stat_statements"}`.
-- `GET /stats/slow-queries?limit=50` -> slowest by total_exec_time.
-- `GET /stats/blocking` -> see if anything is stuck behind a lock.
-- `GET /stats/long-running` -> kill candidates with `select pg_terminate_backend(<pid>)`.
-- Check missing indexes via `GET /advisors/performance`.
-
-**5. Clone data into a branch DB.**
-- `POST /branches` with a branch name.
-- Switch active project to the branch (via dashboard, or add it to Symphonee).
-- Use `pg_dump | psql` externally OR `COPY` statements via `/sql`.
-
-**6. Ship a new edge function.**
-- `POST /edge/deploy` with `{ slug, body, verify_jwt }`.
-- `POST /secrets` for any env vars (no `SUPABASE_` prefix allowed).
-- `POST /edge/invoke/<slug>` to smoke-test.
-
-**7. Create / grow / shrink compute size.**
-- `GET /mgmt/addons` -> see current compute + options.
-- `PATCH /mgmt/addons` with `{ addon_type:"compute_instance", addon_variant:"ci_medium" }`.
-- Or remove: `DELETE /mgmt/addons/<variant>` to return to the default.
-
-**8. Generate TS types after schema changes.**
-- `GET /types/typescript?schemas=public` -> write to `src/types/supabase.ts`.
-
----
-
-### Gotchas the AI should internalize
-
-- **Management API rate limit: 120 req/min** per project per user per scope. Prefer `/stats/*` (SQL-backed) when you can; they don't count against it.
-- `/sql` returns an array of rows. Non-SELECT DDL/DML returns `[]`.
-- `auth.users.email` changes require `email_confirm:true` or the user can't log in until they re-confirm.
-- `DELETE FROM <table>` without a `WHERE` clause is gated. Pass `body.force:true` only when the user has explicitly asked.
-- Secrets whose name starts with `SUPABASE_` are rejected.
-- Rotating a signing key, DB password, or pgsodium root key breaks live sessions/connections. Tell the user BEFORE rotating.
-- Edge functions default to `verify_jwt:true`. Set `verify_jwt:false` for webhook-style functions.
-- `auth.users` is a special system table. Don't `INSERT` directly via PostgREST -- use the Auth admin API.
-- `storage.objects` RLS is what gates per-user file access. Edit those policies via `/policies?schema=storage&table=objects`.
-- `pg_stat_statements` must be enabled for `/stats/slow-queries` to return anything: `CREATE EXTENSION IF NOT EXISTS pg_stat_statements`.
-- Billing/invoice endpoints are NOT on the public Management API. `/mgmt/organizations/<slug>/entitlements` is the closest public substitute (plan limits and quotas).
-- Member invite/remove endpoints are NOT on the public Management API. Tell the user to use the Supabase dashboard for those.
-
----
-
-### Secrets to NEVER log
-
-Service-role keys, Management PATs, user JWTs, refresh tokens, `action_link` / `hashed_token` from generate-link responses, `/api-keys` response bodies, `db_pass` from project responses, raw bodies of `POST /secrets`, and any SQL containing `alter role ... with password '...'`.
-
----
-
-### Opening in the dashboard tab
-
-```bash
-curl -s -X POST http://127.0.0.1:3800/api/ui/view-plugin \
-  -H "Content-Type: application/json" -d '{"plugin":"supabase"}'
-```
-
----
-
-### Reference docs
-
-- Management API: https://supabase.com/docs/reference/api/introduction
-- OpenAPI spec (live): https://api.supabase.com/api/v1
-- Run SQL query: https://supabase.com/docs/reference/api/v1-run-a-query
-- API keys (new format): https://supabase.com/docs/guides/api/api-keys
-- JWT signing keys: https://supabase.com/docs/guides/auth/signing-keys
-- PostgREST Data API: https://supabase.com/docs/guides/api
-- Auth admin: https://supabase.com/docs/reference/self-hosting-auth/introduction
-- Storage REST: https://supabase.com/docs/reference/self-hosting-storage/introduction
-- Edge Functions: https://supabase.com/docs/guides/functions
-- RLS: https://supabase.com/docs/guides/database/postgres/row-level-security
-- Database webhooks: https://supabase.com/docs/guides/database/webhooks
-- Realtime broadcast REST: https://supabase.com/docs/guides/realtime/broadcast
-- CLI: https://supabase.com/docs/reference/cli
+Supabase as a screen inside Cadence: the project at a glance, every table with its rows, columns,
+policies, indexes and triggers, SQL with a guard on destructive statements, users, storage, edge
+functions and secrets, the advisors as insights, the project itself (services, disk, backups,
+migrations, extensions, settings, logs, types), an Ask page, and one script per action for every CLI.
+
+Everything goes through the Cadence server that opened your shell: `$CADENCE_API`
+(`$env:CADENCE_API` in PowerShell; fall back to `http://127.0.0.1:3800` when unset). Mutating
+calls (POST, PUT, PATCH, DELETE) need the header `x-cadence-token: $CADENCE_TOKEN`. The scripts
+attach both for you; prefer them.
+
+## Which project
+
+The plugin knows several Supabase projects, each with a `projectRef`, an API URL, a service role
+key and an anon key typed once and never shown again, and optionally the repository of the app that
+uses it. Every request picks its project in this order:
+
+1. `?project=<name>` on the request (scripts: `-Project '<name>'`).
+2. `?repo=<path>`: the project whose `repoPath` is that path or contains it (scripts send
+   `CADENCE_ACTIVE_REPO_PATH` automatically, so a shell opened for a repository talks to its
+   project without saying so).
+3. The active project (`POST /projects/active {name}` or `Switch-SBProject`).
+
+Never ask the user "which project?" when a shell carries a repository: it is already chosen.
+
+## Keys and what they unlock
+
+- Management token (`sbp_...`, one per account): SQL, schema, policies, functions, secrets, advisors,
+  settings, logs, backups, migrations, types, organizations. `Set-SBManagementToken`.
+- Service role key (per project): rows through PostgREST, auth users, storage, invoking functions.
+  It bypasses row level security; it never leaves the machine, and the API only ever reports
+  `serviceRoleKeySet: true`.
+- Anon key (per project, optional): recorded for the app, not used by the plugin.
+
+`GET /test` (or `Test-SBConnection`) checks both against Supabase.
+
+## Confirmations and permissions
+
+Two layers protect the project:
+
+- Cadence's permission gate. In `review` and `edit` modes a write shows the user an approval modal.
+  A `403 deny` or `403 rejected by user` means stop: do not retry, do not route around.
+- The plugin's own confirmation token for what cannot be undone: destructive SQL (DROP, TRUNCATE,
+  DELETE or UPDATE without WHERE, ALTER ... DROP), deleting a user, emptying a bucket, restarting
+  services, changing add-ons (the bill), creating or deleting cloud projects, restoring backups,
+  disabling RLS. The first call answers `{confirmRequired: true, token, retryWith}`; repeat within
+  10 minutes with `?confirm=<token>`. Without `?soft=1` that first answer is a `409`; with
+  `?soft=1` it is a `200` so clients that throw on non-2xx still see the token. The scripts do this
+  for you: run once, read the token, run again with `-ConfirmToken <token>`. Tell the user what is
+  about to happen before the second call.
+
+Nothing in this plugin runs a hidden write: an AI answering a question (the Ask page, or you)
+uses GET routes and `POST /sql/select`, which is read-only.
+
+## Scripts (PowerShell, run from the Cadence directory)
+
+All take `-Project '<name>'` (optional). Output is JSON unless noted. `Get-*` scripts read only.
+
+Project at a glance
+- `Get-SBOverview [-Refresh]`: services, database, users, storage, tables with RLS, buckets, functions, advisors, disk, backups, migrations, issues (cached 60 s).
+- `Get-SBSummary` (plain text), `Get-SBHealth`, `Get-SBInsights`, `Get-SBAdvisors [-Kind security|performance|both]`, `Get-SBUsage [-Days 30]`.
+
+Schema
+- `Get-SBSchemas`, `Get-SBTables [-Schema public]`, `Get-SBTable -Table <t>`, `Get-SBColumns -Table <t>`, `Get-SBPolicies [-Table <t>]`, `Get-SBIndexes [-Unused]`, `Get-SBFunctions`, `Get-SBExtensions [-Installed]`, `Get-SBTypes [-OutFile path]`.
+- `Set-SBExtension -Name <ext> [-Remove]`.
+- `Enable-SBRls -Table <t> [-Disable]`, `New-SBPolicy -Table <t> -Name <n> [-Command SELECT] [-Roles authenticated] [-Using '<expr>'] [-Check '<expr>']`, `Remove-SBPolicy -Table <t> -Name <n>`.
+
+SQL and rows
+- `Invoke-SBSql -Query '<sql>' | -File x.sql [-ReadOnly] [-ConfirmToken t]`: reads through the read-only route with `-ReadOnly`; otherwise through the gated route, with the confirmation flow on destructive statements.
+- `Get-SBRows -Table <t> [-Select 'a,b'] [-Filter 'col=eq.v' ...] [-Order 'col.desc'] [-Limit 50] [-Offset 0]`: PostgREST filters, returns `{rows, total}`.
+- `New-SBRow -Table <t> -JsonFile row.json` (object or array), `Update-SBRows -Table <t> -Filter ... -JsonFile patch.json`, `Remove-SBRows -Table <t> -Filter ...`. A filter is mandatory on update and delete.
+- `Get-SBDbStats -Kind overview|db|tables|cache-hit|locks|blocking|vacuum|long-running|slow-queries|unused-indexes|roles|replication-slots`.
+
+Auth
+- `Get-SBAuthUsers [-Query text] [-Page 1] [-PerPage 50]`, `Get-SBUserDetail -Id <uuid>`, `Get-SBUserStats [-Days 30]`.
+- `New-SBAuthUser -Email e -Password p [-Unconfirmed] [-MetadataJsonFile f]`, `Send-SBInvite -Email e`, `New-SBAuthLink -Email e [-Type magiclink|recovery|invite|signup]` (prints the link, sends no mail).
+- `Set-SBAuthUser -Id <uuid> [-Ban 24h|none] [-ConfirmEmail] [-Password p] [-SignOut] [-JsonFile f]`, `Remove-SBAuthUser -Id <uuid> [-ConfirmToken t]`.
+
+Storage
+- `Get-SBBuckets`, `Get-SBObjects -Bucket b [-Prefix 'folder/'] [-Limit 100]`, `New-SBSignedUrl -Bucket b -Path 'a/b.png' [-ExpiresIn 3600]`.
+- `New-SBBucket -Name b [-Public] [-FileSizeLimit bytes] [-AllowedTypes image/png,...]`, `Remove-SBBucket -Name b [-Empty] [-ConfirmToken t]`, `Remove-SBObjects -Bucket b -Path 'a','b'`.
+
+Edge functions and secrets
+- `Get-SBEdgeFunctions`, `Get-SBEdgeFunctionBody -Slug s [-OutFile f]` (the source as the management API returns it), `Deploy-SBEdgeFunction -Slug s -File index.ts [-Name n] [-NoJwt]` (creates or publishes a new version), `Invoke-SBEdgeFunction -Slug s [-Body '{}' | -JsonFile f]`, `Remove-SBEdgeFunction -Slug s`.
+- `Get-SBSecrets` (names only), `Set-SBSecret -Name N -Value v` / `-Remove`.
+
+Project operations
+- `Get-SBLogs [-Source postgres_logs|edge_logs|auth_logs|function_logs|storage_logs] [-Limit 50] [-Sql '<sql>']`.
+- `Get-SBBackups`, `Get-SBMigrations`, `New-SBMigration -Name n -File m.sql`, `Get-SBAddons`, `Set-SBAddon -Type t -Variant v [-ConfirmToken t]`, `Get-SBDisk`, `Restart-SBServices [-ConfirmToken t]`.
+- `Get-SBOrganizations`, `Get-SBRegions [-Org slug]`, `New-SBCloudProject -OrganizationId o -Name n -Region r -DbPassword p [-ConfirmToken t]`.
+
+Projects known here
+- `Get-SBProjects`, `Add-SBProject -Name n -ProjectRef ref [-ServiceRoleKey k] [-AnonKey k] [-Url u] [-RepoPath p] [-Activate]`, `Set-SBManagementToken -Token sbp_...`, `Switch-SBProject -Name n`, `Remove-SBProject -Name n` (forgets it here only), `Test-SBConnection`.
+
+From bash: `powershell.exe -ExecutionPolicy Bypass -NoProfile -File "./dashboard/plugins/supabase/scripts/Get-SBTables.ps1" -Schema public`. Windows paths for `-File`/`-JsonFile`; Git Bash `/c/...` paths are not understood by PowerShell.
+
+## Routes (under `/api/plugins/supabase`)
+
+Read (GET, no token needed):
+- `/config` (public shape: `*Set` booleans, active project), `/projects`, `/test`, `/health`, `/summary`
+- `/overview[?refresh=1]`, `/insights`, `/advisors/security`, `/advisors/performance`, `/usage/daily?days=`
+- `/schemas`, `/tables?schema=`, `/table?schema=&name=`, `/policies?schema=[&table=]`, `/indexes?schema=`, `/functions?schema=`, `/triggers?schema=`, `/views`, `/materialized-views`, `/enums`, `/sequences`, `/constraints`, `/roles`, `/publications`, `/extensions`, `/types/typescript?schemas=`
+- `/rows/<table>?<postgrest filters>&_schema=&_meta=1` (`_meta=1` returns `{rows,total}`; `_`-prefixed, `project` and `repo` never reach PostgREST)
+- `/stats/*` (overview, db, tables, cache-hit, locks, blocking, vacuum, long-running, slow-queries, unused-indexes, indexes, roles, replication-slots, bucket-sizes, auth/summary, auth/growth?days=, auth/providers, auth/mfa, auth/sessions)
+- `/auth/users?page=&per_page=`, `/auth/users/<id>/detail`, `/auth/config`, `/auth/audit`
+- `/storage/buckets`, `/storage-config`, `/edge/functions`, `/edge/functions/<slug>/body`, `/secrets`
+- `/backups`, `/migrations`, `/mgmt/addons`, `/mgmt/disk`, `/mgmt/disk/util`, `/mgmt/project/health`, `/mgmt/postgres-config`, `/pooler-config`, `/postgrest-config`, `/mgmt/organizations`, `/mgmt/projects`, `/mgmt/regions[?org=]`, `/realtime/config`, `/webhooks`
+
+Write (token header; permission gate; confirmation tokens where noted):
+- `POST /config {managementToken}` (blank keeps the stored one), `POST /projects`, `PUT|PATCH /projects/<name>` (blank keys keep the stored ones), `DELETE /projects/<name>`, `POST /projects/active {name}`
+- `POST /sql {query, readOnly?, force?}` (destructive: confirmation), `POST /sql/select {query}` (read-only, safe)
+- `POST /rows/<table>`, `PATCH /rows/<table>?<filter>`, `DELETE /rows/<table>?<filter>`, `POST /rpc/<fn>`
+- `POST /policies {schema, table, name, command, roles, using, check}`, `DELETE /policies/<schema>/<table>/<name>`, `POST /rls/enable/<schema>/<table>`, `POST /rls/disable/<schema>/<table>` (confirmation)
+- `POST /extensions {name}`, `DELETE /extensions/<name>`, `POST /migrations {name, query}`
+- `POST /auth/users`, `PUT /auth/users/<id>`, `DELETE /auth/users/<id>` (confirmation), `POST /auth/users/<id>/sign-out`, `POST /auth/invite {email}`, `POST /auth/generate-link {type, email}`, `PATCH /auth/config`
+- `POST /storage/buckets`, `PATCH|DELETE /storage/buckets/<id>`, `POST /storage/buckets/<id>/empty` (confirmation), `POST /storage/list/<bucket> {prefix, limit, offset}`, `POST /storage/sign/<bucket>/<path> {expiresIn}`, `POST /storage/move`, `POST /storage/copy`, `DELETE /storage/objects/<bucket> {prefixes}`
+- `POST /edge/deploy {slug, name?, body, verify_jwt?}`, `PATCH|DELETE /edge/functions/<slug>`, `POST /edge/invoke/<slug>`, `POST /secrets [{name,value}]`, `DELETE /secrets [names]`
+- `POST /logs {sql}`, `POST /mgmt/project/restart-services` (confirmation), `POST /mgmt/project/pause` (confirmation), `PATCH /mgmt/addons` (confirmation), `POST /mgmt/projects` (confirmation), `POST /backups/restore` (confirmation)
+
+The screen (`ui/sb.js`) uses exactly these routes; nothing is hardcoded to one project. Labels come from
+the project's own data.
+
+## How to work
+
+1. Bootstrap Cadence first, as always. If the user's task mentions Supabase, Postgres, RLS, a table,
+   users, a bucket or an edge function and this plugin is installed, ask once whether to use it.
+2. Start with `Get-SBOverview` (or `/overview`): it tells you the tables, the RLS gaps, the users,
+   the storage and the issues in one call.
+3. Read before writing: `Get-SBTable` before touching a table, `Get-SBPolicies` before writing a
+   policy, `Get-SBRows -Limit 5` before an update or delete, with the same filter you will use.
+4. Prefer PostgREST rows routes for data and `/sql/select` for questions; keep `/sql` writes to schema
+   work, and let the confirmation flow run for destructive statements (never pass `force` unprompted).
+5. Take a Cadence checkpoint before a migration or bulk change.
+6. Clean up anything you created to test.
+
+## Do not
+
+- Do not print or log keys or tokens. `config.json` holds them and is gitignored; never commit it.
+- Do not pass `force: true` to `/sql`, disable RLS, delete users, empty buckets, restart services or
+  change add-ons without telling the user what is about to happen.
+- Do not shell out to the Supabase CLI for anything these routes cover.
+- Do not assume `pg_stat_statements` is on: `/stats/slow-queries` and `/insights.slowQueries` say
+  `unavailable: true` when it is not.

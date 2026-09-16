@@ -47,6 +47,6 @@ if ($r.error) {
 } else {
     Write-Host "`n  Created project '$Name' (ref: $($r.id -or $r.ref))" -ForegroundColor Green
     Write-Host "  Status: $($r.status)" -ForegroundColor Gray
-    Write-Host "  Add it to Symphonee via Add-Project -Name '$Name' -ProjectRef '$($r.id -or $r.ref)' ..." -ForegroundColor Gray
+    Write-Host "  Add it to Cadence via Add-Project -Name '$Name' -ProjectRef '$($r.id -or $r.ref)' ..." -ForegroundColor Gray
 }
 Write-Host ""

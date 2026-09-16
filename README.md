@@ -1,55 +1,54 @@
-# Symphonee Supabase Plugin
+# Supabase for Cadence
 
-Full Supabase control plane for Symphonee. Manage every corner of a Supabase project without opening supabase.com: database and SQL, row-level security, auth users, storage buckets, edge functions, realtime, webhooks, and more. Multi-project with fast project switching.
+Supabase as a screen inside Cadence 3.0, and as scripts for every CLI.
 
-## Install
+## The screen
 
-Install via the Symphonee plugin store, or drop this folder into `dashboard/plugins/`.
+Open it from Plugins. The left column is the project: Overview, Database, SQL, Users, Storage,
+Functions, Insights, Project, Ask, Projects. The middle is the work. The right pane is the detail of
+what is selected.
 
-## Configure
+- **Overview**: services, users, storage, the tables with rows, size and RLS, the buckets, the
+  functions, the advisor counts, disk, backups, and the issues to fix first.
+- **Database**: the tables of a schema; one table with its rows (filter, sort, page, edit a cell,
+  add a row, delete a row), columns, policies (turn RLS on or off, new policy from a template, drop),
+  indexes, triggers, constraints, the tables that reference it, and Query it.
+- **SQL**: the editor, the read-only chip, results as a table or JSON, copy as CSV or JSON, a
+  history, and a confirmation for destructive statements.
+- **Users**: totals and growth, invite or create, one user with identities, sessions, MFA, links
+  (magic, recovery), confirm, ban, sign out, delete.
+- **Storage**: buckets, folders, files with public or signed links, move, delete, new bucket.
+- **Functions**: edge functions with source and an invoke form, secrets, database functions and
+  triggers.
+- **Insights**: the security and performance advisors plus tables without RLS or a primary key,
+  unused indexes, cache hit, bloat, long-running statements and slow queries, each with the SQL
+  that fixes it or the table it is about.
+- **Project**: services (restart), compute and disk, backups, migrations, extensions, Postgres and
+  pooler settings, logs by SQL, TypeScript types.
+- **Ask**: a question about the project answered by the AI from read-only routes.
+- **Projects**: the management token and the projects with their keys and repositories.
 
-Open the plugin's **Settings** tab.
+## Set up
 
-1. Paste your Supabase **Management Personal Access Token** once, at the plugin level. You can create one at `https://supabase.com/dashboard/account/tokens`. This token is used for SQL execution, project-level operations, and anything the REST project keys can't do.
-2. Add each Supabase project you want to manage:
-   - **Name** -- any label you want (shown in the switcher)
-   - **Project Ref** -- the `<ref>` in `https://<ref>.supabase.co` (e.g. `abcdefghijklmnop`)
-   - **Service Role Key** -- `sbp_...` / `eyJ...` from Project Settings -> API
-   - **Anon Key** -- the public anon key
-   - **URL** -- the project's full REST base (e.g. `https://<ref>.supabase.co`)
-   - **Repo Path** (optional) -- local path of the repo that uses this Supabase project, so the plugin can read your migrations/types
-3. Pick an active project with the switcher at the top of the tab.
+1. Management token: supabase.com/dashboard/account/tokens. Paste it under Projects (or
+   `Set-SBManagementToken`).
+2. A project: pick it from the account, paste its service role key (Settings > API keys), and choose
+   the repository of the app so the screen follows the shell that is on it.
+3. Test the keys.
 
-## What the AI can do
+Keys live in `config.json` on this machine only. The file is gitignored; the API never returns them.
 
-Everything you'd normally open the Supabase dashboard for:
+## Scripts
 
-- Run arbitrary SQL (SELECT/INSERT/UPDATE/DDL) with a destructive-op safety gate
-- Browse schemas, tables, columns, indexes, constraints, triggers, functions, extensions, enums, sequences
-- Row CRUD through PostgREST
-- RLS policies: list, create, edit, drop
-- Auth: list/create/update/delete users, invites, magic links, MFA factors, sessions
-- Storage: buckets and files, signed URLs
-- Edge functions: list, deploy, invoke, logs, secrets
-- Database webhooks: list/create/update/delete
-- Realtime publications inspect
-- Logs (API, Postgres, auth, functions)
-- pgvector: list indexes, similarity search
-- Generate TypeScript types from schema
+Sixty-three PowerShell scripts under `scripts/`, one per action, all through the Cadence API of the
+server that opened the shell. `instructions.md` lists them with their parameters; every CLI gets that
+file at bootstrap.
 
-See `instructions.md` for the full API reference.
+## Files
 
-## Safety gates
-
-The following operations require an explicit confirmation token (returned as a 409 on the first attempt):
-
-- Destructive SQL: `DROP`, `TRUNCATE`, `DELETE` without `WHERE`
-- Project-level ops: pause, restore, delete project
-- `bucket.empty`, bulk file delete
-- User delete, password reset
-
-Pass `?confirm=<token>` on the retry to proceed.
-
-## License
-
-MIT.
+- `plugin.json`: manifest (sdkVersion 3, one rail surface, the scripts block).
+- `routes.js`: the server routes under `/api/plugins/supabase`.
+- `ui/`: the surface (`sb.js` shell; `overview`, `database`, `rows`, `sql`, `auth`, `storage`,
+  `functions`, `insights`, `project`, `ask`, `projects`; `kit` and `helpers`).
+- `scripts/`: the PowerShell scripts.
+- `config.template.json`: the shape of `config.json`.

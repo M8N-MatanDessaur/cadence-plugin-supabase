@@ -1,0 +1,9 @@
+{
+  "artifacts": [
+    {
+      "name": "readme",
+      "path": "./README.md",
+      "description": "Project README. Quick orientation - what this repo does, conventions, how to run."
+    }
+  ]
+}

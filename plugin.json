@@ -1,8 +1,8 @@
 {
   "id": "supabase",
   "name": "Supabase",
-  "version": "0.2.0",
-  "description": "Full Supabase control plane: database, SQL, auth, storage, edge functions, realtime, webhooks. Multi-project with project switching.",
+  "version": "2.0.1",
+  "description": "Supabase as a screen: the project at a glance, every table with its rows, columns, policies and indexes, SQL with a guard on destructive statements, users, storage, edge functions and secrets, the advisors as insights, the project itself, and scripts for every CLI.",
   "icon": "database-zap",
   "tint": "62, 207, 142",
   "instructions": "instructions.md",
@@ -39,18 +39,807 @@
     "pg_net",
     "pg_graphql"
   ],
-  "activationConditions": { "always": true },
+  "activationConditions": {
+    "always": true
+  },
   "settings": [],
   "contributions": {
-    "settingsHtml": "settings.html",
-    "centerTabs": [
+    "routes": "routes.js",
+    "surfaces": [
       {
-        "id": "manager",
-        "label": "Supabase",
+        "id": "supabase",
+        "title": "Supabase",
         "icon": "database-zap",
-        "html": "tab.html"
+        "mount": "rail",
+        "entry": "ui/sb.js",
+        "sidebar": true,
+        "aside": true
       }
     ],
-    "routes": "routes.js"
-  }
+    "scripts": [
+      {
+        "file": "Get-SBOverview.ps1",
+        "label": "Overview",
+        "description": "Services, tables, users, storage, findings, issues.",
+        "args": []
+      },
+      {
+        "file": "Get-SBSummary.ps1",
+        "label": "Summary",
+        "description": "Plain-text summary.",
+        "args": []
+      },
+      {
+        "file": "Get-SBHealth.ps1",
+        "label": "Health",
+        "description": "Each service and its status.",
+        "args": []
+      },
+      {
+        "file": "Get-SBInsights.ps1",
+        "label": "Insights",
+        "description": "Advisors, RLS gaps, unused indexes, cache, bloat, slow queries.",
+        "args": []
+      },
+      {
+        "file": "Get-SBAdvisors.ps1",
+        "label": "Advisors",
+        "description": "Security and performance lints.",
+        "args": [
+          {
+            "name": "Kind",
+            "label": "security | performance | both",
+            "default": "both"
+          }
+        ]
+      },
+      {
+        "file": "Get-SBUsage.ps1",
+        "label": "Usage",
+        "description": "Daily usage over a window.",
+        "args": [
+          {
+            "name": "Days",
+            "label": "Days",
+            "default": "30"
+          }
+        ]
+      },
+      {
+        "file": "Get-SBSchemas.ps1",
+        "label": "Schemas",
+        "description": "Schemas with table counts.",
+        "args": []
+      },
+      {
+        "file": "Get-SBTables.ps1",
+        "label": "Tables",
+        "description": "Tables with rows, size, RLS, policies.",
+        "args": [
+          {
+            "name": "Schema",
+            "label": "Schema",
+            "default": "public"
+          }
+        ]
+      },
+      {
+        "file": "Get-SBTable.ps1",
+        "label": "Read a table",
+        "description": "Columns, indexes, policies, triggers, constraints, references.",
+        "args": [
+          {
+            "name": "Table",
+            "label": "Table"
+          },
+          {
+            "name": "Schema",
+            "label": "Schema",
+            "default": "public"
+          }
+        ]
+      },
+      {
+        "file": "Get-SBColumns.ps1",
+        "label": "Columns",
+        "description": "Columns of a table.",
+        "args": [
+          {
+            "name": "Table",
+            "label": "Table"
+          },
+          {
+            "name": "Schema",
+            "label": "Schema",
+            "default": "public"
+          }
+        ]
+      },
+      {
+        "file": "Get-SBPolicies.ps1",
+        "label": "Policies",
+        "description": "RLS policies with their expressions.",
+        "args": [
+          {
+            "name": "Table",
+            "label": "Table (blank: all)",
+            "default": ""
+          },
+          {
+            "name": "Schema",
+            "label": "Schema",
+            "default": "public"
+          }
+        ]
+      },
+      {
+        "file": "Get-SBIndexes.ps1",
+        "label": "Indexes",
+        "description": "Indexes, or the unused ones.",
+        "args": [
+          {
+            "name": "Schema",
+            "label": "Schema",
+            "default": "public"
+          }
+        ]
+      },
+      {
+        "file": "Get-SBFunctions.ps1",
+        "label": "DB functions",
+        "description": "Functions and triggers of a schema.",
+        "args": [
+          {
+            "name": "Schema",
+            "label": "Schema",
+            "default": "public"
+          }
+        ]
+      },
+      {
+        "file": "Get-SBExtensions.ps1",
+        "label": "Extensions",
+        "description": "Installed and available extensions.",
+        "args": []
+      },
+      {
+        "file": "Set-SBExtension.ps1",
+        "label": "Enable an extension",
+        "description": "Enable or remove an extension.",
+        "mutates": true,
+        "args": [
+          {
+            "name": "Name",
+            "label": "Extension"
+          }
+        ]
+      },
+      {
+        "file": "Get-SBTypes.ps1",
+        "label": "TypeScript types",
+        "description": "Generate the database types.",
+        "args": [
+          {
+            "name": "OutFile",
+            "label": "Write to file (blank: print)",
+            "default": ""
+          }
+        ]
+      },
+      {
+        "file": "Enable-SBRls.ps1",
+        "label": "RLS on or off",
+        "description": "Enable (or disable) row level security on a table.",
+        "mutates": true,
+        "args": [
+          {
+            "name": "Table",
+            "label": "Table"
+          },
+          {
+            "name": "Schema",
+            "label": "Schema",
+            "default": "public"
+          }
+        ]
+      },
+      {
+        "file": "New-SBPolicy.ps1",
+        "label": "New policy",
+        "description": "Create an RLS policy.",
+        "mutates": true,
+        "args": [
+          {
+            "name": "Table",
+            "label": "Table"
+          },
+          {
+            "name": "Name",
+            "label": "Policy name"
+          },
+          {
+            "name": "Command",
+            "label": "SELECT | INSERT | UPDATE | DELETE | ALL",
+            "default": "ALL"
+          },
+          {
+            "name": "Using",
+            "label": "USING expression",
+            "default": ""
+          }
+        ]
+      },
+      {
+        "file": "Remove-SBPolicy.ps1",
+        "label": "Drop a policy",
+        "description": "Drop an RLS policy.",
+        "mutates": true,
+        "args": [
+          {
+            "name": "Table",
+            "label": "Table"
+          },
+          {
+            "name": "Name",
+            "label": "Policy name"
+          }
+        ]
+      },
+      {
+        "file": "Invoke-SBSql.ps1",
+        "label": "Run SQL",
+        "description": "SQL as postgres; destructive statements need a confirmation.",
+        "mutates": true,
+        "args": [
+          {
+            "name": "Query",
+            "label": "SQL"
+          },
+          {
+            "name": "File",
+            "label": "or a .sql file",
+            "default": ""
+          }
+        ]
+      },
+      {
+        "file": "Get-SBRows.ps1",
+        "label": "Rows",
+        "description": "Read rows with filters, order and paging.",
+        "args": [
+          {
+            "name": "Table",
+            "label": "Table"
+          },
+          {
+            "name": "Filter",
+            "label": "PostgREST filter (column=op.value)",
+            "default": ""
+          },
+          {
+            "name": "Limit",
+            "label": "Limit",
+            "default": "50"
+          }
+        ]
+      },
+      {
+        "file": "New-SBRow.ps1",
+        "label": "Insert rows",
+        "description": "Insert rows from a JSON file.",
+        "mutates": true,
+        "args": [
+          {
+            "name": "Table",
+            "label": "Table"
+          },
+          {
+            "name": "JsonFile",
+            "label": "JSON file"
+          }
+        ]
+      },
+      {
+        "file": "Update-SBRows.ps1",
+        "label": "Update rows",
+        "description": "Update the rows a filter matches.",
+        "mutates": true,
+        "args": [
+          {
+            "name": "Table",
+            "label": "Table"
+          },
+          {
+            "name": "Filter",
+            "label": "PostgREST filter (column=op.value)"
+          },
+          {
+            "name": "JsonFile",
+            "label": "JSON file"
+          }
+        ]
+      },
+      {
+        "file": "Remove-SBRows.ps1",
+        "label": "Delete rows",
+        "description": "Delete the rows a filter matches.",
+        "mutates": true,
+        "args": [
+          {
+            "name": "Table",
+            "label": "Table"
+          },
+          {
+            "name": "Filter",
+            "label": "PostgREST filter (column=op.value)"
+          }
+        ]
+      },
+      {
+        "file": "Get-SBDbStats.ps1",
+        "label": "Database stats",
+        "description": "Sizes, cache, locks, vacuum, slow queries.",
+        "args": [
+          {
+            "name": "Kind",
+            "label": "overview | db | tables | cache-hit | locks | blocking | vacuum | long-running | slow-queries | unused-indexes",
+            "default": "overview"
+          }
+        ]
+      },
+      {
+        "file": "Get-SBAuthUsers.ps1",
+        "label": "Users",
+        "description": "List or search auth users.",
+        "args": [
+          {
+            "name": "Query",
+            "label": "Search email",
+            "default": ""
+          }
+        ]
+      },
+      {
+        "file": "Get-SBUserDetail.ps1",
+        "label": "User detail",
+        "description": "One user with identities and sessions.",
+        "args": [
+          {
+            "name": "Id",
+            "label": "User id"
+          }
+        ]
+      },
+      {
+        "file": "Get-SBUserStats.ps1",
+        "label": "User stats",
+        "description": "Totals, growth, providers, MFA, sessions.",
+        "args": [
+          {
+            "name": "Days",
+            "label": "Days",
+            "default": "30"
+          }
+        ]
+      },
+      {
+        "file": "New-SBAuthUser.ps1",
+        "label": "New user",
+        "description": "Create a user with email and password.",
+        "mutates": true,
+        "args": [
+          {
+            "name": "Email",
+            "label": "Email"
+          },
+          {
+            "name": "Password",
+            "label": "Password"
+          }
+        ]
+      },
+      {
+        "file": "Send-SBInvite.ps1",
+        "label": "Invite",
+        "description": "Send an invite mail.",
+        "mutates": true,
+        "args": [
+          {
+            "name": "Email",
+            "label": "Email"
+          }
+        ]
+      },
+      {
+        "file": "New-SBAuthLink.ps1",
+        "label": "Auth link",
+        "description": "Magic, recovery, invite or signup link.",
+        "mutates": true,
+        "args": [
+          {
+            "name": "Email",
+            "label": "Email"
+          },
+          {
+            "name": "Type",
+            "label": "magiclink | recovery | invite | signup",
+            "default": "magiclink"
+          }
+        ]
+      },
+      {
+        "file": "Set-SBAuthUser.ps1",
+        "label": "Change a user",
+        "description": "Ban, confirm, password, sign out, or fields from JSON.",
+        "mutates": true,
+        "args": [
+          {
+            "name": "Id",
+            "label": "User id"
+          },
+          {
+            "name": "Ban",
+            "label": "Ban duration (24h, 7d, none)",
+            "default": ""
+          }
+        ]
+      },
+      {
+        "file": "Remove-SBAuthUser.ps1",
+        "label": "Delete a user",
+        "description": "Delete a user for good.",
+        "mutates": true,
+        "args": [
+          {
+            "name": "Id",
+            "label": "User id"
+          }
+        ]
+      },
+      {
+        "file": "Get-SBBuckets.ps1",
+        "label": "Buckets",
+        "description": "Buckets with sizes.",
+        "args": []
+      },
+      {
+        "file": "Get-SBObjects.ps1",
+        "label": "Files",
+        "description": "Files under a prefix of a bucket.",
+        "args": [
+          {
+            "name": "Bucket",
+            "label": "Bucket"
+          },
+          {
+            "name": "Prefix",
+            "label": "Folder prefix",
+            "default": ""
+          }
+        ]
+      },
+      {
+        "file": "New-SBBucket.ps1",
+        "label": "New bucket",
+        "description": "Create a bucket.",
+        "mutates": true,
+        "args": [
+          {
+            "name": "Name",
+            "label": "Bucket"
+          }
+        ]
+      },
+      {
+        "file": "Remove-SBBucket.ps1",
+        "label": "Delete a bucket",
+        "description": "Empty and delete a bucket.",
+        "mutates": true,
+        "args": [
+          {
+            "name": "Name",
+            "label": "Bucket"
+          }
+        ]
+      },
+      {
+        "file": "New-SBSignedUrl.ps1",
+        "label": "Signed URL",
+        "description": "Download link for a private file.",
+        "args": [
+          {
+            "name": "Bucket",
+            "label": "Bucket"
+          },
+          {
+            "name": "Path",
+            "label": "Path in the bucket"
+          }
+        ]
+      },
+      {
+        "file": "Remove-SBObjects.ps1",
+        "label": "Delete files",
+        "description": "Delete files from a bucket.",
+        "mutates": true,
+        "args": [
+          {
+            "name": "Bucket",
+            "label": "Bucket"
+          },
+          {
+            "name": "Path",
+            "label": "Path(s)"
+          }
+        ]
+      },
+      {
+        "file": "Get-SBEdgeFunctions.ps1",
+        "label": "Edge functions",
+        "description": "Deployed edge functions.",
+        "args": []
+      },
+      {
+        "file": "Get-SBEdgeFunctionBody.ps1",
+        "label": "Function source",
+        "description": "Read an edge function.",
+        "args": [
+          {
+            "name": "Slug",
+            "label": "Slug"
+          }
+        ]
+      },
+      {
+        "file": "Deploy-SBEdgeFunction.ps1",
+        "label": "Deploy a function",
+        "description": "Deploy an edge function from a file.",
+        "mutates": true,
+        "args": [
+          {
+            "name": "Slug",
+            "label": "Slug"
+          },
+          {
+            "name": "File",
+            "label": "Source file"
+          }
+        ]
+      },
+      {
+        "file": "Invoke-SBEdgeFunction.ps1",
+        "label": "Invoke a function",
+        "description": "Call an edge function with JSON.",
+        "mutates": true,
+        "args": [
+          {
+            "name": "Slug",
+            "label": "Slug"
+          },
+          {
+            "name": "Body",
+            "label": "JSON body",
+            "default": "{}"
+          }
+        ]
+      },
+      {
+        "file": "Remove-SBEdgeFunction.ps1",
+        "label": "Delete a function",
+        "description": "Delete an edge function.",
+        "mutates": true,
+        "args": [
+          {
+            "name": "Slug",
+            "label": "Slug"
+          }
+        ]
+      },
+      {
+        "file": "Get-SBSecrets.ps1",
+        "label": "Secrets",
+        "description": "Secret names.",
+        "args": []
+      },
+      {
+        "file": "Set-SBSecret.ps1",
+        "label": "Set a secret",
+        "description": "Set or remove a secret.",
+        "mutates": true,
+        "args": [
+          {
+            "name": "Name",
+            "label": "NAME"
+          },
+          {
+            "name": "Value",
+            "label": "Value",
+            "default": ""
+          }
+        ]
+      },
+      {
+        "file": "Get-SBLogs.ps1",
+        "label": "Logs",
+        "description": "Logs of a service, newest first.",
+        "args": [
+          {
+            "name": "Source",
+            "label": "postgres_logs | edge_logs | auth_logs | function_logs | storage_logs",
+            "default": "postgres_logs"
+          },
+          {
+            "name": "Limit",
+            "label": "Lines",
+            "default": "50"
+          }
+        ]
+      },
+      {
+        "file": "Get-SBBackups.ps1",
+        "label": "Backups",
+        "description": "Backups and PITR.",
+        "args": []
+      },
+      {
+        "file": "Get-SBMigrations.ps1",
+        "label": "Migrations",
+        "description": "Applied migrations.",
+        "args": []
+      },
+      {
+        "file": "New-SBMigration.ps1",
+        "label": "Apply a migration",
+        "description": "Apply SQL as a named migration.",
+        "mutates": true,
+        "args": [
+          {
+            "name": "Name",
+            "label": "Migration name"
+          },
+          {
+            "name": "File",
+            "label": ".sql file"
+          }
+        ]
+      },
+      {
+        "file": "Get-SBAddons.ps1",
+        "label": "Add-ons",
+        "description": "Selected and available add-ons.",
+        "args": []
+      },
+      {
+        "file": "Set-SBAddon.ps1",
+        "label": "Change an add-on",
+        "description": "Change compute or another add-on (confirmation).",
+        "mutates": true,
+        "args": [
+          {
+            "name": "Type",
+            "label": "Add-on type"
+          },
+          {
+            "name": "Variant",
+            "label": "Variant"
+          }
+        ]
+      },
+      {
+        "file": "Get-SBDisk.ps1",
+        "label": "Disk",
+        "description": "Disk size and usage.",
+        "args": []
+      },
+      {
+        "file": "Restart-SBServices.ps1",
+        "label": "Restart services",
+        "description": "Restart every service (confirmation).",
+        "mutates": true,
+        "args": []
+      },
+      {
+        "file": "Get-SBOrganizations.ps1",
+        "label": "Organizations",
+        "description": "Organizations and their projects.",
+        "args": []
+      },
+      {
+        "file": "Get-SBRegions.ps1",
+        "label": "Regions",
+        "description": "Available regions.",
+        "args": []
+      },
+      {
+        "file": "New-SBCloudProject.ps1",
+        "label": "New cloud project",
+        "description": "Create a project in the cloud (confirmation).",
+        "mutates": true,
+        "args": [
+          {
+            "name": "OrganizationId",
+            "label": "Organization id"
+          },
+          {
+            "name": "Name",
+            "label": "Name"
+          },
+          {
+            "name": "Region",
+            "label": "Region"
+          }
+        ]
+      },
+      {
+        "file": "Get-SBProjects.ps1",
+        "label": "Projects",
+        "description": "Projects known here.",
+        "args": []
+      },
+      {
+        "file": "Add-SBProject.ps1",
+        "label": "Add a project",
+        "description": "Register a project with its keys.",
+        "mutates": true,
+        "args": [
+          {
+            "name": "Name",
+            "label": "Name"
+          },
+          {
+            "name": "ProjectRef",
+            "label": "Project ref"
+          },
+          {
+            "name": "ServiceRoleKey",
+            "label": "Service role key",
+            "default": ""
+          }
+        ]
+      },
+      {
+        "file": "Set-SBManagementToken.ps1",
+        "label": "Management token",
+        "description": "Store the account token.",
+        "mutates": true,
+        "args": [
+          {
+            "name": "Token",
+            "label": "sbp_... token"
+          }
+        ]
+      },
+      {
+        "file": "Switch-SBProject.ps1",
+        "label": "Switch project",
+        "description": "Make a project the active one.",
+        "mutates": true,
+        "args": [
+          {
+            "name": "Name",
+            "label": "Project name"
+          }
+        ]
+      },
+      {
+        "file": "Remove-SBProject.ps1",
+        "label": "Forget a project",
+        "description": "Remove a project from this machine.",
+        "mutates": true,
+        "args": [
+          {
+            "name": "Name",
+            "label": "Project name"
+          }
+        ]
+      },
+      {
+        "file": "Test-SBConnection.ps1",
+        "label": "Test the keys",
+        "description": "Token and keys against Supabase.",
+        "args": []
+      }
+    ]
+  },
+  "sdkVersion": 3
 }

@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<script src="/plugins/sdk/symphonee-sdk.js"></script>
+<script src="/plugins/sdk/cadence-sdk.js"></script>
 <style>
   * { box-sizing: border-box; }
   ::-webkit-scrollbar { width: 7px; height: 7px; }
@@ -161,7 +161,7 @@
     <button class="btn primary sm" id="new-project-btn">+ New cloud project</button>
     <button class="btn sm" id="reload-projects">Reload</button>
   </div>
-  <h4>Symphonee-registered projects</h4>
+  <h4>Cadence-registered projects</h4>
   <div id="projects-local"></div>
   <h4>Cloud projects (Management API)</h4>
   <div id="projects-cloud"></div>
@@ -451,7 +451,7 @@ window.switchTo = async (name) => {
   loadProjects(); loadProjectsTab();
 };
 window.removeLocal = async (name) => {
-  if (!confirm('Remove ' + name + ' from Symphonee? (does not delete the Supabase project)')) return;
+  if (!confirm('Remove ' + name + ' from Cadence? (does not delete the Supabase project)')) return;
   await fetch(API + '/projects/' + encodeURIComponent(name), { method: 'DELETE' });
   loadProjectsTab();
 };
