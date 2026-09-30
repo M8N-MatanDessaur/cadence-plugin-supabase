@@ -839,7 +839,8 @@
         "description": "Token and keys against Supabase.",
         "args": []
       }
-    ]
+    ],
+    "sealConfig": true
   },
   "sdkVersion": 3
 }

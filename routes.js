@@ -23,13 +23,19 @@ const https = require('https');
 const crypto = require('crypto');
 
 const configPath = path.join(__dirname, 'config.json');
+
+// Cadence reads and writes this file for the plugin (ctx.pluginConfig): sealed at rest, so the
+// secrets in it are not in the clear on disk. On a Cadence without it, the file as before.
+let cfgIO = null;
+function readConfigFile() { return cfgIO ? cfgIO.read() : JSON.parse(fs.readFileSync(configPath, 'utf8')); }
+function writeConfigFile(data) { if (cfgIO) cfgIO.write(data); else fs.writeFileSync(configPath, JSON.stringify(data, null, 2), 'utf8'); }
 const MANAGEMENT_HOST = 'api.supabase.com';
 
 // -- Config helpers ----------------------------------------------------------
 
 function readCfg() {
   try {
-    const raw = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    const raw = readConfigFile();
     return {
       managementToken: raw.managementToken || '',
       projects: Array.isArray(raw.projects) ? raw.projects : [],
@@ -41,7 +47,7 @@ function readCfg() {
 }
 
 function saveCfg(cfg) {
-  fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2), 'utf8');
+  writeConfigFile(cfg);
 }
 
 // The project a request asked for by name or by repository path; set at the top of the request
@@ -250,7 +256,8 @@ async function __attentionHandler(req, res, url, compute, json) {
   return json(res, out);
 }
 
-module.exports = function ({ addRoute, addPrefixRoute, json, readBody, shell }) {
+module.exports = function ({ addRoute, addPrefixRoute, json, readBody, shell, pluginConfig }) {
+  cfgIO = pluginConfig || null;
   addRoute('GET', '/attention', (req, res, url) => __attentionHandler(req, res, url, async (req) => { const o = await __selfGet(req, '/api/plugins/supabase/overview', 90000); return (o && o.issues || []).map((i) => ({ level: i.level, text: i.text })); }, json));
   const permGate = shell && typeof shell.permGate === 'function' ? shell.permGate : null;
   const gate = async (res, route, label) => (permGate ? permGate(res, 'api', route, label) : true);
